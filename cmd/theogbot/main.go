@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/aniketnotcoder/theogbot/internal/account"
 	"github.com/aniketnotcoder/theogbot/internal/bot"
 	"github.com/aniketnotcoder/theogbot/internal/config"
 )
@@ -22,7 +23,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	app := bot.New(cfg.BotToken, logger)
+	accounts := account.NewManager(cfg.APIID, cfg.APIHash)
+	app := bot.New(cfg.BotToken, logger, accounts)
 	if err := app.Run(ctx); err != nil && ctx.Err() == nil {
 		logger.Error("bot stopped", "error", err)
 		os.Exit(1)
