@@ -66,7 +66,7 @@ func (m *Manager) Begin(ctx context.Context, userID int64, phone string) error {
 	go func() {
 		err := a.client.Run(runCtx, func(clientCtx context.Context) error {
 			authenticator := interactiveAuth{phone: phone, code: a.code, pass: a.pass}
-			return auth.NewFlow(authenticator, auth.SendCodeOptions{}).Run(clientCtx, a.client.Auth())
+			if err := auth.NewFlow(authenticator, auth.SendCodeOptions{}).Run(clientCtx, a.client.Auth()); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\t<-clientCtx.Done()\n\t\t\treturn nil
 		})
 		a.done <- err
 		m.mu.Lock()
