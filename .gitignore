@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+sessions/
+tmp/
+bin/
+*.log
