@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
@@ -102,7 +103,9 @@ func resolveTarget(ctx context.Context, api *tg.Client, target string) (tg.Input
 	}
 	id, err := strconv.ParseInt(target, 10, 64)
 	if err != nil { return nil, fmt.Errorf("invalid numeric chat ID %q", target) }
-	result, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{OffsetPeer:&tg.InputPeerEmpty{}, Limit:200, Hash:0})
+	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	result, err := api.MessagesGetDialogs(requestCtx, &tg.MessagesGetDialogsRequest{OffsetPeer:&tg.InputPeerEmpty{}, Limit:200, Hash:0})
+	cancel()
 	if err != nil { return nil, fmt.Errorf("read storage bot dialogs: %w", err) }
 	var chats []tg.ChatClass
 	switch v := result.(type) {

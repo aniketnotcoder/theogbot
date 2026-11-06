@@ -49,7 +49,9 @@ func FetchHistoryIDs(ctx context.Context, api *tg.Client, peer tg.InputPeerClass
 	for len(ids) < maxMessages {
 		limit := 100
 		if remaining := maxMessages-len(ids); remaining < limit { limit = remaining }
-		result, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{Peer: peer, OffsetID: offsetID, Limit: limit})
+		requestCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		result, err := api.MessagesGetHistory(requestCtx, &tg.MessagesGetHistoryRequest{Peer: peer, OffsetID: offsetID, Limit: limit})
+		cancel()
 		if err != nil { return nil, fmt.Errorf("get chat history: %w", err) }
 		page, err := extractMessageIDs(result)
 		if err != nil { return nil, err }
@@ -90,9 +92,11 @@ func extractMessageIDs(result tg.MessagesMessagesClass) ([]int,error) {
 // account's dialogs. It does not join invite links or enumerate inaccessible chats.
 func ResolvePrivateChannelID(ctx context.Context, api *tg.Client, channelID int64) (tg.InputPeerClass, error) {
 	if api == nil || channelID <= 0 { return nil, errors.New("valid MTProto API and channel ID are required") }
-	result, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+	requestCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	result, err := api.MessagesGetDialogs(requestCtx, &tg.MessagesGetDialogsRequest{
 		OffsetPeer: &tg.InputPeerEmpty{}, Limit: 100, Hash: 0,
 	})
+	cancel()
 	if err != nil { return nil, fmt.Errorf("read account dialogs: %w", err) }
 	var chats []tg.ChatClass
 	switch value := result.(type) {

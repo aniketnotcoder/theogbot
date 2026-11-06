@@ -85,7 +85,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	case "/start":
 		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected posts\n/copy CHAT_LINK [LIMIT] — download and upload accessible chat history\n/logout — disconnect\n/info — account status\\n/storage — storage uploader status"
 	case "/help":
-		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected media\n/copy CHAT_LINK [LIMIT] — download and upload history, default 5000, max 50000\n/logout — disconnect\n/info — account status\n\nUse only chats your account can access. Telegram restrictions and flood waits are respected."
+		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected media\n/copy CHAT_LINK [LIMIT] — download and upload history, default 100, max 50000\n/logout — disconnect\n/info — account status\n\nUse only chats your account can access. Telegram restrictions and flood waits are respected."
 	case "/login":
 		if len(fields)<2{reply="Usage: /login +COUNTRYCODEPHONE\nThen /code YOUR_CODE and, if prompted, /password YOUR_2FA_PASSWORD"}else if b.accounts==nil{reply="MTProto unavailable. Configure API_ID and API_HASH."}else if b.accounts.Connected(msg.From.ID){reply="An account session is already active. Use /logout first."}else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil{reply="Could not start login: "+err.Error()}else{reply="Login started. Submit the Telegram code here using /code YOUR_CODE."}
 	case "/code":
@@ -97,9 +97,14 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	case "/batch":
 		if len(fields)<2{reply="Usage: /batch https://t.me/channel/123 [https://t.me/channel/124]"}else{go b.runBatch(ctx,msg.From.ID,msg.Chat.ID,fields[1:]);return}
 	case "/copy":
-		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=5000;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{go b.runCopy(ctx,msg.From.ID,msg.Chat.ID,fields[1],limit);return}}
+		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=100;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{go b.runCopy(ctx,msg.From.ID,msg.Chat.ID,fields[1],limit);return}}
 	case "/storage":
-		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else { reply = "Storage uploader: connected\\nDestination: configured\\nUpload mode: download → upload" }
+		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else {
+			checkCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			err := b.storage.Ready(checkCtx)
+			cancel()
+			if err != nil { reply = "Storage uploader NOT ready: " + err.Error() } else { reply = "Storage uploader: connected\\nDestination: configured\\nUpload mode: download → upload" }
+		}
 	case "/logout":
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
@@ -127,13 +132,24 @@ func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []str
 
 func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limit int) {
 	ctx,cancel:=context.WithTimeout(parent,30*time.Minute);defer cancel()
-	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your Telegram account first with /login.");return}
+	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Your Telegram account is not connected. Run /login first, then /info.");return}
+	if b.storage == nil { _ = b.sendMessage(ctx,chatID,"Storage uploader is not configured. Set STORAGE_TARGET in Railway."); return }
+	readyCtx, readyCancel := context.WithTimeout(ctx, 12*time.Second)
+	readyErr := b.storage.Ready(readyCtx)
+	readyCancel()
+	if readyErr != nil { _ = b.sendMessage(ctx,chatID,"Storage uploader is NOT ready: "+readyErr.Error()+". Check Railway logs for 'storage client stopped' or STORAGE_TARGET."); return }
 	username,channelID,err:=parseChatLink(raw);if err!=nil{_=b.sendMessage(ctx,chatID,err.Error());return}
 	var source tg.InputPeerClass
-	if username!=""{source,err=forward.ResolveUsername(ctx,api,username)}else{source,err=forward.ResolvePrivateChannelID(ctx,api,channelID)}
+	resolveCtx, resolveCancel := context.WithTimeout(ctx, 15*time.Second)
+	if username!=""{source,err=forward.ResolveUsername(resolveCtx,api,username)}else{source,err=forward.ResolvePrivateChannelID(resolveCtx,api,channelID)}
+	resolveCancel()
 	if err!=nil{_=b.sendMessage(ctx,chatID,"Cannot access source chat: "+err.Error());return}
-	_=b.sendMessage(ctx,chatID,fmt.Sprintf("Reading accessible history (limit %d)…",limit))
-	ids,err:=forward.FetchHistoryIDs(ctx,api,source,limit);if err!=nil{_=b.sendMessage(ctx,chatID,"History retrieval failed: "+err.Error());return}
+	_=b.sendMessage(ctx,chatID,fmt.Sprintf("Source resolved. Reading up to %d messages…",limit))
+	historyCtx, historyCancel := context.WithTimeout(ctx, 25*time.Second)
+	ids,err:=forward.FetchHistoryIDs(historyCtx,api,source,limit)
+	historyCancel()
+	if err!=nil{b.log.Error("copy history retrieval failed","user_id",userID,"channel_id",channelID,"limit",limit,"error",err);_=b.sendMessage(ctx,chatID,"History retrieval failed (25s limit): "+err.Error());return}
+	_=b.sendMessage(ctx,chatID,fmt.Sprintf("History loaded: %d messages. Starting transfer…",len(ids)))
 	if len(ids)==0{_=b.sendMessage(ctx,chatID,"No messages found in accessible history.");return}
 	b.executeTransfer(ctx,api,source,chatID,ids,"Copy")
 }
