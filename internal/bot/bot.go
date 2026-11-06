@@ -148,7 +148,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *incomingMessage) {
 		} else { reply = "No active Telegram session." }
 	case "/info":
 		connected := b.accounts != nil && b.accounts.Connected(msg.From.ID)
-		reply = fmt.Sprintf("TheOGBot MVP\nBackend: Go\nMTProto session active: %t\nSession storage: memory only\nDatabase: none", connected)
+		status := "disconnected"\n\t\tif b.accounts != nil { status = b.accounts.Status(msg.From.ID) }\n\t\treply = fmt.Sprintf("TheOGBot MVP\\nBackend: Go\\nMTProto status: %s\\nSession storage: memory only\\nDatabase: none", status)
 	default:
 		reply = "Unknown command. Send /help."
 	}
