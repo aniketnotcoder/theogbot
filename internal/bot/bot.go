@@ -15,6 +15,8 @@ import (
 	"github.com/aniketnotcoder/theogbot/internal/account"
 	"github.com/aniketnotcoder/theogbot/internal/forward"
 	"github.com/aniketnotcoder/theogbot/internal/links"
+	"github.com/aniketnotcoder/theogbot/internal/media"
+	"github.com/gotd/td/telegram/query/messages"
 	"github.com/aniketnotcoder/theogbot/internal/storage"
 	"github.com/gotd/td/tg"
 )
@@ -79,9 +81,9 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	if (command=="/code"||command=="/password")&&msg.Chat.Type!="private"{_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);_=b.sendMessage(ctx,msg.Chat.ID,"For account security, send login codes and 2FA passwords only in a private chat with this bot.");return}
 	switch command {
 	case "/start":
-		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — forward selected posts\n/copy CHAT_LINK [LIMIT] — forward accessible chat history\n/logout — disconnect\n/info — account status\\n/storage — storage uploader status"
+		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected posts\n/copy CHAT_LINK [LIMIT] — download and upload accessible chat history\n/logout — disconnect\n/info — account status\\n/storage — storage uploader status"
 	case "/help":
-		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — forward selected messages (same native engine as /copy)\n/copy CHAT_LINK [LIMIT] — forward history, default 5000, max 50000\n/logout — disconnect\n/info — account status\n\nUse only chats your account can access. Telegram restrictions and flood waits are respected."
+		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected media\n/copy CHAT_LINK [LIMIT] — download and upload history, default 5000, max 50000\n/logout — disconnect\n/info — account status\n\nUse only chats your account can access. Telegram restrictions and flood waits are respected."
 	case "/login":
 		if len(fields)<2{reply="Usage: /login +COUNTRYCODEPHONE\nThen /code YOUR_CODE and, if prompted, /password YOUR_2FA_PASSWORD"}else if b.accounts==nil{reply="MTProto unavailable. Configure API_ID and API_HASH."}else if b.accounts.Connected(msg.From.ID){reply="An account session is already active. Use /logout first."}else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil{reply="Could not start login: "+err.Error()}else{reply="Login started. Submit the Telegram code here using /code YOUR_CODE."}
 	case "/code":
@@ -100,7 +102,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(msg.From.ID)}
-		reply=fmt.Sprintf("TheOGBot\nBackend: Go\nMTProto: %s\nSession storage: memory only\nTransfer: native MTProto forwarding (download/upload integration pending)",status)
+		reply=fmt.Sprintf("TheOGBot\nBackend: Go\nMTProto: %s\nSession storage: memory only\nTransfer: MTProto download → upload",status)
 	default: reply="Unknown command. Send /help."
 	}
 	if err:=b.sendMessage(ctx,msg.Chat.ID,reply);err!=nil{b.log.Error("send message failed","chat_id",msg.Chat.ID,"error",err)}
@@ -118,7 +120,7 @@ func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []str
 		if source!=nil&&peerKey(source)!=peerKey(peer){_=b.sendMessage(ctx,chatID,"All /batch links must belong to the same source chat.");return}
 		source=peer;ids=append(ids,parsed.MessageID)
 	}
-	b.executeForward(ctx,api,source,chatID,userID,ids,"Batch")
+	b.executeTransfer(ctx,api,source,chatID,ids,"Batch")
 }
 
 func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limit int) {
@@ -131,16 +133,66 @@ func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limi
 	_=b.sendMessage(ctx,chatID,fmt.Sprintf("Reading accessible history (limit %d)…",limit))
 	ids,err:=forward.FetchHistoryIDs(ctx,api,source,limit);if err!=nil{_=b.sendMessage(ctx,chatID,"History retrieval failed: "+err.Error());return}
 	if len(ids)==0{_=b.sendMessage(ctx,chatID,"No messages found in accessible history.");return}
-	b.executeForward(ctx,api,source,chatID,userID,ids,"Copy")
+	b.executeTransfer(ctx,api,source,chatID,ids,"Copy")
 }
 
-func (b *Bot) executeForward(ctx context.Context,api *tg.Client,source tg.InputPeerClass,chatID,userID int64,ids []int,label string) {
-	destination,err:=forward.ResolveUsername(ctx,api,b.username)
-	if err!=nil{_=b.sendMessage(ctx,chatID,"Cannot resolve this bot as the destination. Open the bot and press Start, then retry. Details: "+err.Error());return}
-	_=b.sendMessage(ctx,chatID,fmt.Sprintf("%s started: %d messages. Using native Telegram forwarding.",label,len(ids)))
-	result,err:=forward.ForwardIDs(ctx,api,source,destination,ids)
-	if err!=nil{_=b.sendMessage(ctx,chatID,fmt.Sprintf("%s stopped after %d/%d messages. Telegram response: %v",label,min(result.ForwardedBatches*forward.MaxIDsPerRequest,len(ids)),len(ids),err));return}
-	_=b.sendMessage(ctx,chatID,fmt.Sprintf("%s complete. Requested %d messages in %d forwarding batches.",label,result.Requested,result.ForwardedBatches))
+func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.InputPeerClass, chatID int64, ids []int, label string) {
+	if b.storage == nil {
+		_ = b.sendMessage(ctx, chatID, "Storage uploader is not configured. Set STORAGE_TARGET and restart.")
+		return
+	}
+	if err := b.storage.Ready(ctx); err != nil {
+		_ = b.sendMessage(ctx, chatID, "Storage uploader is not ready: "+err.Error())
+		return
+	}
+	if len(ids) == 0 {
+		_ = b.sendMessage(ctx, chatID, label+": no messages to transfer.")
+		return
+	}
+	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s started: %d messages. Mode: download → upload.", label, len(ids)))
+	wanted := make(map[int]bool, len(ids))
+	for _, id := range ids { wanted[id] = true }
+	found := make(map[int]messages.Elem, len(ids))
+	iter := messages.NewQueryBuilder(api).GetHistory(source).BatchSize(100).Iter()
+	for iter.Next(ctx) {
+		elem := iter.Value()
+		id := elem.Msg.GetID()
+		if wanted[id] { found[id] = elem; delete(wanted,id) }
+		if len(wanted)==0 { break }
+	}
+	if err := iter.Err(); err != nil {
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s could not read source messages: %v", label, err))
+		return
+	}
+	if len(wanted)>0 {
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s stopped: %d of %d requested messages could not be retrieved from source history.",label,len(wanted),len(ids)))
+		return
+	}
+	done, failed, skipped := 0,0,0
+	for i,id := range ids {
+		if err := ctx.Err(); err != nil {
+			_ = b.sendMessage(context.Background(),chatID,fmt.Sprintf("%s cancelled after %d/%d (failed %d, skipped %d).",label,done,len(ids),failed,skipped))
+			return
+		}
+		elem := found[id]
+		downloaded, err := media.DownloadMessage(ctx,api,elem,"")
+		if err != nil {
+			skipped++
+			_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] skipped message %d: %v",label,i+1,len(ids),id,err))
+			continue
+		}
+		_, uploadErr := b.storage.UploadPath(ctx,downloaded.Path,downloaded.Name,downloaded.MIME,"")
+		cleanupErr := downloaded.Cleanup()
+		if uploadErr != nil {
+			failed++
+			_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] upload failed for message %d: %v",label,i+1,len(ids),id,uploadErr))
+			continue
+		}
+		if cleanupErr != nil { b.log.Warn("temporary file cleanup failed","path",downloaded.Path,"error",cleanupErr) }
+		done++
+		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).",label,done,len(ids),failed,skipped))
+	}
+	_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s finished. Uploaded: %d, failed: %d, skipped: %d, requested: %d.",label,done,failed,skipped,len(ids)))
 }
 
 func parseChatLink(raw string)(string,int64,error){
