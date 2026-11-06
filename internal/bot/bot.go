@@ -31,6 +31,7 @@ type Bot struct {
 	offset int64
 	accounts *account.Manager
 	storage *storage.Client
+	tempDir string
 }
 
 type update struct {
@@ -58,6 +59,7 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 }
 
 func (b *Bot) SetStorage(client *storage.Client) { b.storage = client }
+func (b *Bot) SetTempDir(path string) { b.tempDir = path }
 
 func (b *Bot) Run(ctx context.Context) error {
 	var me botIdentity
@@ -175,7 +177,7 @@ func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.Inp
 			return
 		}
 		elem := found[id]
-		downloaded, err := media.DownloadMessage(ctx,api,elem,"")
+		downloaded, err := media.DownloadMessage(ctx,api,elem,b.tempDir)
 		if err != nil {
 			skipped++
 			_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] skipped message %d: %v",label,i+1,len(ids),id,err))

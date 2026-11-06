@@ -1,58 +1,62 @@
 # TheOGBot
 
-A Go Telegram bot with a long-running Bot API poller and per-user MTProto clients.
+Go Telegram bot using the Telegram Bot API for commands and gotd/td (MTProto) for each user's source account and the storage uploader.
 
-## Current MVP status
+## Transfer flow
 
-The repository currently contains the command interface and the initial MTProto login flow. Batch retrieval and history-copy handlers are not implemented yet; they are the next development milestone. Do not treat placeholder /batch or /copy replies as completed features.
+- `/batch LINK [LINK ...]`: fetches the selected messages from one source chat, downloads supported media using the logged-in user's MTProto session, then uploads each file as a new message to the configured storage chat using the bot's MTProto session.
+- `/copy CHAT_LINK [LIMIT]`: reads accessible chat history (default 5000, max 50000) and uses the same download → upload pipeline.
+- The destination is not the source user's Saved Messages and is not the bot's private chat. It is the separate storage group/channel configured by `STORAGE_TARGET`.
+- Telegram-protected messages (`noforwards`) are not downloaded. Unsupported/text-only/service messages are reported as skipped. Telegram remains authoritative about whether a media file can be retrieved.
+- Temporary files are removed after each upload. Transfers run sequentially to limit memory and disk use.
+- Current progress is message-level; per-file byte percentage/speed, cancellation command, retries, and stored-message permalink reporting are not implemented yet.
 
-## Architecture
+## Required environment variables
 
-- Go 1.25
-- Telegram Bot API long polling
-- MTProto via gotd/td
-- Railway deployment using the included Dockerfile
-- In-memory sessions only; restarting/redeploying logs users out
-- No database and no external object storage
-- Native MTProto forwarding for the transfer path; no media temp files needed for ordinary forwards
+| Variable | Required | Description |
+|---|---:|---|
+| `BOT_TOKEN` | Yes | Token from @BotFather. Used for bot commands and the storage uploader. |
+| `API_ID` | Yes | Numeric MTProto API ID from https://my.telegram.org/apps. |
+| `API_HASH` | Yes | MTProto API hash from https://my.telegram.org/apps. |
+| `STORAGE_TARGET` | Yes for transfers | Destination username (e.g. `@my_storage_group`) or private numeric chat ID (e.g. `-1001234567890`). |
+| `TEMP_DIR` | No | Temporary download directory. Defaults to the OS temp directory (usually `/tmp`). |
 
-The bot must run as a persistent service. It is not designed for Vercel serverless functions.
+### Telegram setup
+
+1. Create the bot with @BotFather and set `BOT_TOKEN`.
+2. Get `API_ID` and `API_HASH` from https://my.telegram.org/apps.
+3. Create a separate private storage supergroup/channel.
+4. Add the bot to the storage destination. For a channel, grant permission to post; for a group, ensure it can send media.
+5. Set `STORAGE_TARGET`. For a public destination use its username. For a private destination use its numeric Telegram chat ID, normally beginning with `-100` for supergroups/channels. The bot must already have access to that destination.
+6. Keep all credentials in Railway Variables, never in Git.
+
+The user invoking `/batch` or `/copy` must separately connect their own Telegram account using `/login`, then submit `/code` and, if requested, `/password` in a private chat with the bot. The source account must already be a member of the source chat.
 
 ## Railway deployment
 
-1. Push this repository to GitHub.
-2. In Railway, create a project and choose Deploy from GitHub repo.
-3. Select aniketnotcoder/theogbot. Railway should detect the Dockerfile automatically.
-4. Open the service's Variables tab and add the three variables below.
-5. Deploy and inspect the deployment logs. A successful startup logs that the bot connected and long polling started.
-
-### Required Railway variables
-
-| Variable | Value |
-|---|---|
-| BOT_TOKEN | Bot token from @BotFather |
-| API_ID | Numeric API ID from https://my.telegram.org/apps |
-| API_HASH | API hash from https://my.telegram.org/apps |
-
-Never commit real credentials or paste them into public issues. If a token has been exposed, revoke it and create a replacement.
+- Deploy as a persistent Railway service from this repository's Dockerfile (not a serverless function).
+- Set the variables above in **Service → Variables**.
+- No database or object storage is required. User MTProto sessions are currently memory-only, so a restart/redeploy logs users out and they must log in again.
+- `/tmp` is ephemeral. A Railway volume is not required for the current temporary-file workflow; ensure sufficient ephemeral disk space for the largest file being transferred.
+- Monitor deployment logs for bot and storage MTProto connection errors.
 
 ## Commands
 
-- /start, /help, /info
-- /login +COUNTRYCODEPHONE
-- /code YOUR_CODE
-- /password YOUR_2FA_PASSWORD
-- /logout
-- /batch and /copy are planned and not yet functional.
+- `/start`, `/help`, `/info`, `/storage`
+- `/login +COUNTRYCODEPHONE`
+- `/code YOUR_CODE`
+- `/password YOUR_2FA_PASSWORD`
+- `/logout`
+- `/batch LINK [LINK ...]`
+- `/copy CHAT_LINK [LIMIT]`
 
-For security, send login codes and 2FA passwords only in the private bot chat. The bot attempts to delete those incoming messages after receiving them, but Telegram deletion is not a guarantee that the message was never visible or retained elsewhere. Never use an account you do not own or control.
+Send login codes and 2FA passwords only in the private bot chat. The bot attempts to delete those incoming messages, but deletion is not a guarantee that they were never visible or retained elsewhere. Never use an account you do not own or control.
 
 ## Development
 
-    go mod download
-    go test ./...
-    go run ./cmd/theogbot
-
-## Forwarding behavior
-
-Both `/batch` and `/copy` are intended to use the same native MTProto forwarding path. The engine batches up to 100 message IDs per `messages.forwardMessages` request and returns Telegram RPC errors as-is, including protected-content restrictions. It does not silently fall back to download/re-upload. The engine requires resolved source and destination `InputPeer` values; peer resolution and command integration are still under development.
+```sh
+go mod download
+go test ./...
+go build ./cmd/theogbot
+go run ./cmd/theogbot
+```

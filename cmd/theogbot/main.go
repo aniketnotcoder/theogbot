@@ -22,6 +22,7 @@ func main() {
 
 	accounts := account.NewManager(cfg.APIID, cfg.APIHash)
 	app := bot.New(cfg.BotToken, logger, accounts)
+	app.SetTempDir(cfg.TempDir)
 
 	// Storage upload uses an independent bot-authenticated MTProto client.
 	// It is optional until STORAGE_TARGET is configured.

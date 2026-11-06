@@ -76,7 +76,7 @@ func (c *Client) Ready(ctx context.Context) error {
 }
 
 // UploadPath posts a new document message to the configured destination.
-// STORAGE_TARGET accepts a resolvable Telegram username (for example @storagegroup).
+// STORAGE_TARGET accepts a public username or a private numeric chat ID (-100... for channels/supergroups).
 func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption string) (tg.UpdatesClass, error) {
 	if err := c.Ready(ctx); err != nil { return nil, err }
 	c.mu.RLock()
