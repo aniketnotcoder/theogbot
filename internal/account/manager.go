@@ -17,7 +17,7 @@ var (
  ErrNoPendingLogin = errors.New("no login is waiting for a code or password")
 )
 type prompt struct { value string }
-type account struct { cancel context.CancelFunc; code chan prompt; pass chan prompt; state string; client *telegram.Client }
+type account struct { cancel context.CancelFunc; code chan prompt; pass chan prompt; state string; lastError string; client *telegram.Client }
 type Manager struct { appID int; appHash string; mu sync.Mutex; users map[int64]*account }
 
 func NewManager(appID int, appHash string) *Manager { return &Manager{appID: appID, appHash: appHash, users: make(map[int64]*account)} }
@@ -46,7 +46,13 @@ func (m *Manager) Begin(ctx context.Context, userID int64, phone string) error {
    return nil
   })
   if err != nil && runCtx.Err() == nil {
-   m.mu.Lock(); if m.users[userID] == a { delete(m.users, userID) }; m.mu.Unlock()
+   m.mu.Lock()
+   if m.users[userID] == a {
+    a.state = "failed"
+    a.lastError = err.Error()
+    a.client = nil
+   }
+   m.mu.Unlock()
   }
  }()
  return nil
@@ -65,7 +71,15 @@ func (m *Manager) Logout(userID int64) bool {
  if a == nil { return false }; a.cancel(); return true
 }
 func (m *Manager) Connected(userID int64) bool { return m.Status(userID) == "connected" }
-func (m *Manager) Status(userID int64) string { m.mu.Lock(); defer m.mu.Unlock(); if a := m.users[userID]; a != nil { return a.state }; return "disconnected" }
+func (m *Manager) Status(userID int64) string {
+ m.mu.Lock()
+ defer m.mu.Unlock()
+ if a := m.users[userID]; a != nil {
+  if a.state == "failed" && a.lastError != "" { return "failed: " + a.lastError }
+  return a.state
+ }
+ return "disconnected"
+}
 
 type interactiveAuth struct { phone string; code <-chan prompt; pass <-chan prompt; onState func(string) }
 func (a interactiveAuth) Phone(context.Context) (string, error) { return a.phone, nil }
