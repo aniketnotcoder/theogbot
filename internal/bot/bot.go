@@ -141,9 +141,17 @@ func parseChatLink(raw string)(string,int64,error){
 	u,err:=url.Parse(strings.TrimSpace(raw));if err!=nil{return "",0,fmt.Errorf("Invalid chat link. Use https://t.me/username or https://t.me/c/CHANNEL_ID")}
 	host:=strings.ToLower(u.Hostname());if host!="t.me"&&host!="telegram.me"&&host!="www.t.me"&&host!="www.telegram.me"{return "",0,fmt.Errorf("Unsupported Telegram link host.")}
 	parts:=strings.Split(strings.Trim(u.Path,"/"),"/")
+	// /copy accepts either a chat link or a message permalink. Ignore the
+	// trailing message ID because /copy operates on the whole chat history.
+	if len(parts)==2 && validChatUsername(parts[0]) {
+		if _, e := strconv.Atoi(parts[1]); e == nil { parts = parts[:1] }
+	}
+	if len(parts)==3 && parts[0]=="c" {
+		if _, e := strconv.Atoi(parts[2]); e == nil { parts = parts[:2] }
+	}
 	if len(parts)==1&&validChatUsername(parts[0]){return parts[0],0,nil}
 	if len(parts)==2&&parts[0]=="c"{id,e:=strconv.ParseInt(parts[1],10,64);if e==nil&&id>0{return "",id,nil}}
-	return "",0,fmt.Errorf("Use a chat link like https://t.me/username or https://t.me/c/CHANNEL_ID")
+	return "",0,fmt.Errorf("Use a chat link like https://t.me/username, https://t.me/username/123, or https://t.me/c/CHANNEL_ID/123")
 }
 func validChatUsername(s string)bool{return len(s)>=5&&len(s)<=32&&!strings.HasPrefix(s,"+")}
 func peerKey(peer tg.InputPeerClass) string {
