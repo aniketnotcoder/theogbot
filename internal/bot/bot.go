@@ -109,7 +109,7 @@ func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []str
 		var peer tg.InputPeerClass
 		if parsed.Username!=""{peer,err=forward.ResolveUsername(ctx,api,parsed.Username)}else{peer,err=forward.ResolvePrivateChannelID(ctx,api,parsed.ChannelID)}
 		if err!=nil{_=b.sendMessage(ctx,chatID,"Cannot access source chat: "+err.Error());return}
-		if source!=nil&&fmt.Sprintf("%T:%v",source,source)!=fmt.Sprintf("%T:%v",peer,peer){_=b.sendMessage(ctx,chatID,"All /batch links must belong to the same source chat.");return}
+		if source!=nil&&peerKey(source)!=peerKey(peer){_=b.sendMessage(ctx,chatID,"All /batch links must belong to the same source chat.");return}
 		source=peer;ids=append(ids,parsed.MessageID)
 	}
 	b.executeForward(ctx,api,source,chatID,userID,ids,"Batch")
@@ -146,6 +146,14 @@ func parseChatLink(raw string)(string,int64,error){
 	return "",0,fmt.Errorf("Use a chat link like https://t.me/username or https://t.me/c/CHANNEL_ID")
 }
 func validChatUsername(s string)bool{return len(s)>=5&&len(s)<=32&&!strings.HasPrefix(s,"+")}
+func peerKey(peer tg.InputPeerClass) string {
+	switch p:=peer.(type) {
+	case *tg.InputPeerChannel: return fmt.Sprintf("channel:%d",p.ChannelID)
+	case *tg.InputPeerChat: return fmt.Sprintf("chat:%d",p.ChatID)
+	case *tg.InputPeerUser: return fmt.Sprintf("user:%d",p.UserID)
+	default: return fmt.Sprintf("%T",peer)
+	}
+}
 
 func (b *Bot) deleteMessage(ctx context.Context,chatID,messageID int64)error{return b.call(ctx,"deleteMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(messageID,10)}},nil)}
 func (b *Bot) sendMessage(ctx context.Context,chatID int64,text string)error{return b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{text}},nil)}
