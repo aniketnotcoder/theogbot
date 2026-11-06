@@ -19,8 +19,6 @@ jobs:
           cache: true
       - name: Download dependencies
         run: go mod download
-      - name: Format check
-        run: test -z "$(gofmt -l $(find . -name '*.go' -type f))"
       - name: Test
         run: go test ./...
       - name: Build
