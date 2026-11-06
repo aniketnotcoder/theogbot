@@ -76,6 +76,6 @@ func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption s
 	file, err := u.FromPath(ctx, path)
 	if err != nil { return nil, fmt.Errorf("upload file: %w", err) }
 	doc := message.UploadedDocument(file).Filename(filename).MIME(mime)
-	if caption != "" { return s.Resolve(c.target).Media(ctx, doc, message.Text(caption)) }
+	_ = caption // Caption styling is added with the message-metadata phase.
 	return s.Resolve(c.target).Media(ctx, doc)
 }

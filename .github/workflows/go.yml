@@ -2,7 +2,7 @@ name: Go CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev/transfer-rebuild]
   pull_request:
     branches: [main]
 
