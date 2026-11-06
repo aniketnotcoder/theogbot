@@ -84,3 +84,27 @@ func extractMessageIDs(result tg.MessagesMessagesClass) ([]int,error) {
 	}
 	return ids,nil
 }
+
+
+// ResolvePrivateChannelID finds a channel already present in the authenticated
+// account's dialogs. It does not join invite links or enumerate inaccessible chats.
+func ResolvePrivateChannelID(ctx context.Context, api *tg.Client, channelID int64) (tg.InputPeerClass, error) {
+	if api == nil || channelID <= 0 { return nil, errors.New("valid MTProto API and channel ID are required") }
+	result, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+		OffsetPeer: &tg.InputPeerEmpty{}, Limit: 100, Hash: 0,
+	})
+	if err != nil { return nil, fmt.Errorf("read account dialogs: %w", err) }
+	var chats []tg.ChatClass
+	switch value := result.(type) {
+	case *tg.MessagesDialogs: chats = value.Chats
+	case *tg.MessagesDialogsSlice: chats = value.Chats
+	default: return nil, fmt.Errorf("unsupported dialogs response %T", result)
+	}
+	for _, item := range chats {
+		if ch, ok := item.(*tg.Channel); ok && ch.ID == channelID {
+			if ch.AccessHash == 0 { return nil, fmt.Errorf("%w: channel access hash unavailable", ErrPeerNotFound) }
+			return &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: private channel is not in the first 100 account dialogs; use its public username if available", ErrPeerNotFound)
+}
