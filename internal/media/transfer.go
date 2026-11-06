@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"path/filepath"
 
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/query/messages"
@@ -27,6 +28,7 @@ func DownloadMessage(ctx context.Context, api *tg.Client, elem messages.Elem, te
 	if msg.Noforwards { return nil, ErrProtectedMessage }
 	file, ok := elem.File()
 	if !ok { return nil, errors.New("message has no photo or document attachment") }
+	if strings.TrimSpace(tempDir) == "" { tempDir = os.TempDir() }
 	if err := os.MkdirAll(tempDir, 0700); err != nil { return nil, fmt.Errorf("create temp directory: %w", err) }
 	f, err := os.CreateTemp(tempDir, "theogbot-*")
 	if err != nil { return nil, fmt.Errorf("create temp file: %w", err) }
