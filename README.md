@@ -14,7 +14,7 @@ The repository currently contains the command interface and the initial MTProto 
 - Railway deployment using the included Dockerfile
 - In-memory sessions only; restarting/redeploying logs users out
 - No database and no external object storage
-- Temporary media files only when transfer functionality is added
+- Native MTProto forwarding for the transfer path; no media temp files needed for ordinary forwards
 
 The bot must run as a persistent service. It is not designed for Vercel serverless functions.
 
@@ -52,3 +52,7 @@ For security, send login codes and 2FA passwords only in the private bot chat. T
     go mod download
     go test ./...
     go run ./cmd/theogbot
+
+## Forwarding behavior
+
+Both `/batch` and `/copy` are intended to use the same native MTProto forwarding path. The engine batches up to 100 message IDs per `messages.forwardMessages` request and returns Telegram RPC errors as-is, including protected-content restrictions. It does not silently fall back to download/re-upload. The engine requires resolved source and destination `InputPeer` values; peer resolution and command integration are still under development.
