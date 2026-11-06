@@ -44,8 +44,12 @@ func (c *Client) Run(ctx context.Context) error {
 		u := uploader.NewUploader(api).WithThreads(4)
 		s := message.NewSender(api).WithUploader(u)
 		c.mu.Lock()
-		peer, resolveErr := resolveTarget(clientCtx, api, c.target)
-		if resolveErr != nil { return fmt.Errorf("resolve STORAGE_TARGET: %w", resolveErr) }
+		var peer tg.InputPeerClass
+		if strings.HasPrefix(strings.TrimSpace(c.target), "-") {
+			var resolveErr error
+			peer, resolveErr = resolveTarget(clientCtx, api, c.target)
+			if resolveErr != nil { return fmt.Errorf("resolve STORAGE_TARGET: %w", resolveErr) }
+		}
 		c.api, c.sender, c.uploader, c.targetPeer = api, s, u, peer
 		c.mu.Unlock()
 		c.readyOnce.Do(func(){close(c.ready)})
@@ -82,7 +86,8 @@ func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption s
 	if err != nil { return nil, fmt.Errorf("upload file: %w", err) }
 	doc := message.UploadedDocument(file).Filename(filename).MIME(mime)
 	_ = caption // Caption styling is added with the message-metadata phase.
-	return s.To(peer).Media(ctx, doc)
+	if peer != nil { return s.To(peer).Media(ctx, doc) }
+	return s.Resolve(c.target).Media(ctx, doc)
 }
 
 
@@ -93,7 +98,7 @@ func resolveTarget(ctx context.Context, api *tg.Client, target string) (tg.Input
 	target = strings.TrimSpace(target)
 	if target == "" { return nil, errors.New("STORAGE_TARGET is empty") }
 	if !strings.HasPrefix(target, "-") {
-		return message.NewSender(api).Resolve(target).AsInputPeer(ctx)
+		return nil, fmt.Errorf("private numeric storage target required; public usernames are resolved by the sender at upload time")
 	}
 	id, err := strconv.ParseInt(target, 10, 64)
 	if err != nil { return nil, fmt.Errorf("invalid numeric chat ID %q", target) }
