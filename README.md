@@ -1,22 +1,54 @@
-# theogbot
+# TheOGBot
 
-A Go-based Telegram utility bot project.
+A Go Telegram bot with a long-running Bot API poller and per-user MTProto clients.
 
-## Status
+## Current MVP status
 
-Early MVP scaffold. The bot API layer and MTProto account-client layer are developed separately. User sessions are process-local for the initial MVP and are cleared on restart.
+The repository currently contains the command interface and the initial MTProto login flow. Batch retrieval and history-copy handlers are not implemented yet; they are the next development milestone. Do not treat placeholder /batch or /copy replies as completed features.
 
-## Scope
+## Architecture
 
-- Telegram Bot API command interface
-- Explicit user-account authentication through MTProto
-- Retrieval of content the authenticated account can access
-- Batch processing and progress reporting
-- Copy/recreate supported, unprotected messages into the requesting user's bot chat
-- No database or external object storage in the MVP
+- Go 1.25
+- Telegram Bot API long polling
+- MTProto via gotd/td
+- Railway deployment using the included Dockerfile
+- In-memory sessions only; restarting/redeploying logs users out
+- No database and no external object storage
+- Temporary media files only when transfer functionality is added
 
-Protected-content restrictions, Telegram permissions, and rate limits are respected.
+The bot must run as a persistent service. It is not designed for Vercel serverless functions.
+
+## Railway deployment
+
+1. Push this repository to GitHub.
+2. In Railway, create a project and choose Deploy from GitHub repo.
+3. Select aniketnotcoder/theogbot. Railway should detect the Dockerfile automatically.
+4. Open the service's Variables tab and add the three variables below.
+5. Deploy and inspect the deployment logs. A successful startup logs that the bot connected and long polling started.
+
+### Required Railway variables
+
+| Variable | Value |
+|---|---|
+| BOT_TOKEN | Bot token from @BotFather |
+| API_ID | Numeric API ID from https://my.telegram.org/apps |
+| API_HASH | API hash from https://my.telegram.org/apps |
+
+Never commit real credentials or paste them into public issues. If a token has been exposed, revoke it and create a replacement.
+
+## Commands
+
+- /start, /help, /info
+- /login +COUNTRYCODEPHONE
+- /code YOUR_CODE
+- /password YOUR_2FA_PASSWORD
+- /logout
+- /batch and /copy are planned and not yet functional.
+
+For security, send login codes and 2FA passwords only in the private bot chat. The bot attempts to delete those incoming messages after receiving them, but Telegram deletion is not a guarantee that the message was never visible or retained elsewhere. Never use an account you do not own or control.
 
 ## Development
 
-Requires Go 1.24 or newer and Telegram API credentials (`BOT_TOKEN`, `API_ID`, `API_HASH`). See `.env.example`.
+    go mod download
+    go test ./...
+    go run ./cmd/theogbot
