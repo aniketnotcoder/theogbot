@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/gotd/td/session"
@@ -21,6 +23,7 @@ type Client struct {
 	api *tg.Client
 	sender *message.Sender
 	uploader *uploader.Uploader
+	targetPeer tg.InputPeerClass
 	ready chan struct{}
 	readyOnce sync.Once
 	runErr error
@@ -41,7 +44,9 @@ func (c *Client) Run(ctx context.Context) error {
 		u := uploader.NewUploader(api).WithThreads(4)
 		s := message.NewSender(api).WithUploader(u)
 		c.mu.Lock()
-		c.api, c.sender, c.uploader = api, s, u
+		peer, resolveErr := resolveTarget(clientCtx, api, c.target)
+		if resolveErr != nil { return fmt.Errorf("resolve STORAGE_TARGET: %w", resolveErr) }
+		c.api, c.sender, c.uploader, c.targetPeer = api, s, u, peer
 		c.mu.Unlock()
 		c.readyOnce.Do(func(){close(c.ready)})
 		<-clientCtx.Done()
@@ -49,7 +54,7 @@ func (c *Client) Run(ctx context.Context) error {
 	})
 	c.mu.Lock()
 	c.runErr = err
-	c.api, c.sender, c.uploader = nil, nil, nil
+	c.api, c.sender, c.uploader, c.targetPeer = nil, nil, nil, nil
 	c.mu.Unlock()
 	c.readyOnce.Do(func(){close(c.ready)})
 	return err
@@ -71,11 +76,44 @@ func (c *Client) Ready(ctx context.Context) error {
 func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption string) (tg.UpdatesClass, error) {
 	if err := c.Ready(ctx); err != nil { return nil, err }
 	c.mu.RLock()
-	s, u := c.sender, c.uploader
+	s, u, peer := c.sender, c.uploader, c.targetPeer
 	c.mu.RUnlock()
 	file, err := u.FromPath(ctx, path)
 	if err != nil { return nil, fmt.Errorf("upload file: %w", err) }
 	doc := message.UploadedDocument(file).Filename(filename).MIME(mime)
 	_ = caption // Caption styling is added with the message-metadata phase.
-	return s.Resolve(c.target).Media(ctx, doc)
+	return s.To(peer).Media(ctx, doc)
+}
+
+
+// resolveTarget supports public usernames and private groups/channels already
+// visible in the storage bot's dialogs. Numeric targets use Telegram's Bot API
+// chat ID form (-100<channel id> for supergroups/channels, -<chat id> for groups).
+func resolveTarget(ctx context.Context, api *tg.Client, target string) (tg.InputPeerClass, error) {
+	target = strings.TrimSpace(target)
+	if target == "" { return nil, errors.New("STORAGE_TARGET is empty") }
+	if !strings.HasPrefix(target, "-") {
+		return message.NewSender(api).Resolve(target).AsInputPeer(ctx)
+	}
+	id, err := strconv.ParseInt(target, 10, 64)
+	if err != nil { return nil, fmt.Errorf("invalid numeric chat ID %q", target) }
+	result, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{OffsetPeer:&tg.InputPeerEmpty{}, Limit:200, Hash:0})
+	if err != nil { return nil, fmt.Errorf("read storage bot dialogs: %w", err) }
+	var chats []tg.ChatClass
+	switch v := result.(type) {
+	case *tg.MessagesDialogs: chats = v.Chats
+	case *tg.MessagesDialogsSlice: chats = v.Chats
+	default: return nil, fmt.Errorf("unsupported dialogs response %T", result)
+	}
+	if id <= -1000000000000 {
+		channelID := -id - 1000000000000
+		for _, item := range chats { if ch, ok := item.(*tg.Channel); ok && int64(ch.ID)==channelID {
+			if ch.AccessHash==0 { return nil, errors.New("storage channel access hash unavailable") }
+			return &tg.InputPeerChannel{ChannelID:ch.ID,AccessHash:ch.AccessHash},nil
+		} }
+	} else if id < 0 {
+		chatID := -id
+		for _, item := range chats { if ch, ok := item.(*tg.Chat); ok && int64(ch.ID)==chatID { return &tg.InputPeerChat{ChatID:ch.ID},nil } }
+	}
+	return nil, fmt.Errorf("storage chat %s was not found in the bot's dialogs; add the bot to that group/channel first", target)
 }

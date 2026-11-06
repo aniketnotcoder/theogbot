@@ -15,6 +15,7 @@ import (
 	"github.com/aniketnotcoder/theogbot/internal/account"
 	"github.com/aniketnotcoder/theogbot/internal/forward"
 	"github.com/aniketnotcoder/theogbot/internal/links"
+	"github.com/aniketnotcoder/theogbot/internal/storage"
 	"github.com/gotd/td/tg"
 )
 
@@ -27,6 +28,7 @@ type Bot struct {
 	log *slog.Logger
 	offset int64
 	accounts *account.Manager
+	storage *storage.Client
 }
 
 type update struct {
@@ -53,6 +55,8 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 	},log:logger,accounts:accounts}
 }
 
+func (b *Bot) SetStorage(client *storage.Client) { b.storage = client }
+
 func (b *Bot) Run(ctx context.Context) error {
 	var me botIdentity
 	if err:=b.call(ctx,"getMe",nil,&me);err!=nil{return fmt.Errorf("telegram getMe: %w",err)}
@@ -75,7 +79,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	if (command=="/code"||command=="/password")&&msg.Chat.Type!="private"{_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);_=b.sendMessage(ctx,msg.Chat.ID,"For account security, send login codes and 2FA passwords only in a private chat with this bot.");return}
 	switch command {
 	case "/start":
-		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — forward selected posts\n/copy CHAT_LINK [LIMIT] — forward accessible chat history\n/logout — disconnect\n/info — account status"
+		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — forward selected posts\n/copy CHAT_LINK [LIMIT] — forward accessible chat history\n/logout — disconnect\n/info — account status\\n/storage — storage uploader status"
 	case "/help":
 		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — forward selected messages (same native engine as /copy)\n/copy CHAT_LINK [LIMIT] — forward history, default 5000, max 50000\n/logout — disconnect\n/info — account status\n\nUse only chats your account can access. Telegram restrictions and flood waits are respected."
 	case "/login":
@@ -90,11 +94,13 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		if len(fields)<2{reply="Usage: /batch https://t.me/channel/123 [https://t.me/channel/124]"}else{go b.runBatch(ctx,msg.From.ID,msg.Chat.ID,fields[1:]);return}
 	case "/copy":
 		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=5000;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{go b.runCopy(ctx,msg.From.ID,msg.Chat.ID,fields[1],limit);return}}
+	case "/storage":
+		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else { reply = "Storage uploader: connected\\nDestination: configured\\nUpload mode: download → upload" }
 	case "/logout":
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(msg.From.ID)}
-		reply=fmt.Sprintf("TheOGBot\nBackend: Go\nMTProto: %s\nSession storage: memory only\nTransfer: native MTProto forwarding",status)
+		reply=fmt.Sprintf("TheOGBot\nBackend: Go\nMTProto: %s\nSession storage: memory only\nTransfer: native MTProto forwarding (download/upload integration pending)",status)
 	default: reply="Unknown command. Send /help."
 	}
 	if err:=b.sendMessage(ctx,msg.Chat.ID,reply);err!=nil{b.log.Error("send message failed","chat_id",msg.Chat.ID,"error",err)}

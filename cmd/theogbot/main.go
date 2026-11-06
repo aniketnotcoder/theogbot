@@ -28,6 +28,7 @@ func main() {
 	if cfg.StorageTarget != "" {
 		store, err := storage.New(cfg.APIID, cfg.APIHash, cfg.BotToken, cfg.StorageTarget)
 		if err != nil { logger.Error("storage configuration error", "error", err); os.Exit(1) }
+		app.SetStorage(store)
 		go func(){ if err := store.Run(ctx); err != nil && ctx.Err() == nil { logger.Error("storage client stopped", "error", err) } }()
 	}
 	if err := app.Run(ctx); err != nil && ctx.Err() == nil { logger.Error("bot stopped", "error", err); os.Exit(1) }
