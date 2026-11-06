@@ -99,11 +99,11 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	case "/copy":
 		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=100;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{go b.runCopy(ctx,msg.From.ID,msg.Chat.ID,fields[1],limit);return}}
 	case "/storage":
-		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else {
-			checkCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			err := b.storage.Ready(checkCtx)
+		if b.storage == nil { reply = "STORAGE_TARGET is not configured in Railway." } else if api, ok := b.accounts.API(msg.From.ID); !ok { reply = "Connect your personal Telegram account first with /login." } else {
+			checkCtx, cancel := context.WithTimeout(ctx,18*time.Second)
+			_, err := b.storage.Resolve(checkCtx,api)
 			cancel()
-			if err != nil { reply = "Storage uploader NOT ready: " + err.Error() } else { reply = "Storage uploader: connected\\nDestination: configured\\nUpload mode: download → upload" }
+			if err != nil { reply = "Storage destination is NOT accessible: " + err.Error() } else { reply = "Storage destination: accessible\\nUploader: your connected personal MTProto session\\nMode: download → upload" }
 		}
 	case "/logout":
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
@@ -118,6 +118,11 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []string) {
 	ctx,cancel:=context.WithTimeout(parent,30*time.Minute);defer cancel()
 	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your Telegram account first with /login.");return}
+	if b.storage == nil { _ = b.sendMessage(ctx,chatID,"STORAGE_TARGET is not configured in Railway."); return }
+	storageCtx, storageCancel := context.WithTimeout(ctx,18*time.Second)
+	storagePeer, storageErr := b.storage.Resolve(storageCtx,api)
+	storageCancel()
+	if storageErr != nil { _ = b.sendMessage(ctx,chatID,"Cannot access storage destination using your logged-in Telegram account: "+storageErr.Error()); return }
 	var source tg.InputPeerClass;ids:=make([]int,0,len(rawLinks))
 	for _,raw:=range rawLinks{
 		parsed,err:=links.Parse(raw);if err!=nil{_=b.sendMessage(ctx,chatID,"Invalid Telegram post link: "+raw);return}
@@ -127,17 +132,17 @@ func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []str
 		if source!=nil&&peerKey(source)!=peerKey(peer){_=b.sendMessage(ctx,chatID,"All /batch links must belong to the same source chat.");return}
 		source=peer;ids=append(ids,parsed.MessageID)
 	}
-	b.executeTransfer(ctx,api,source,chatID,ids,"Batch")
+	b.executeTransfer(ctx,api,source,storagePeer,chatID,ids,"Batch")
 }
 
 func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limit int) {
 	ctx,cancel:=context.WithTimeout(parent,30*time.Minute);defer cancel()
 	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Your Telegram account is not connected. Run /login first, then /info.");return}
-	if b.storage == nil { _ = b.sendMessage(ctx,chatID,"Storage uploader is not configured. Set STORAGE_TARGET in Railway."); return }
-	readyCtx, readyCancel := context.WithTimeout(ctx, 12*time.Second)
-	readyErr := b.storage.Ready(readyCtx)
-	readyCancel()
-	if readyErr != nil { _ = b.sendMessage(ctx,chatID,"Storage uploader is NOT ready: "+readyErr.Error()+". Check Railway logs for 'storage client stopped' or STORAGE_TARGET."); return }
+	if b.storage == nil { _ = b.sendMessage(ctx,chatID,"STORAGE_TARGET is not configured in Railway."); return }
+	storageCtx, storageCancel := context.WithTimeout(ctx,18*time.Second)
+	storagePeer, storageErr := b.storage.Resolve(storageCtx,api)
+	storageCancel()
+	if storageErr != nil { _ = b.sendMessage(ctx,chatID,"Cannot access storage destination using your logged-in Telegram account: "+storageErr.Error()); return }
 	username,channelID,err:=parseChatLink(raw);if err!=nil{_=b.sendMessage(ctx,chatID,err.Error());return}
 	var source tg.InputPeerClass
 	resolveCtx, resolveCancel := context.WithTimeout(ctx, 15*time.Second)
@@ -151,18 +156,10 @@ func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limi
 	if err!=nil{b.log.Error("copy history retrieval failed","user_id",userID,"channel_id",channelID,"limit",limit,"error",err);_=b.sendMessage(ctx,chatID,"History retrieval failed (25s limit): "+err.Error());return}
 	_=b.sendMessage(ctx,chatID,fmt.Sprintf("History loaded: %d messages. Starting transfer…",len(ids)))
 	if len(ids)==0{_=b.sendMessage(ctx,chatID,"No messages found in accessible history.");return}
-	b.executeTransfer(ctx,api,source,chatID,ids,"Copy")
+	b.executeTransfer(ctx,api,source,storagePeer,chatID,ids,"Copy")
 }
 
-func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.InputPeerClass, chatID int64, ids []int, label string) {
-	if b.storage == nil {
-		_ = b.sendMessage(ctx, chatID, "Storage uploader is not configured. Set STORAGE_TARGET and restart.")
-		return
-	}
-	if err := b.storage.Ready(ctx); err != nil {
-		_ = b.sendMessage(ctx, chatID, "Storage uploader is not ready: "+err.Error())
-		return
-	}
+func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.InputPeerClass, storagePeer tg.InputPeerClass, chatID int64, ids []int, label string) {
 	if len(ids) == 0 {
 		_ = b.sendMessage(ctx, chatID, label+": no messages to transfer.")
 		return
@@ -199,7 +196,7 @@ func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.Inp
 			_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] skipped message %d: %v",label,i+1,len(ids),id,err))
 			continue
 		}
-		_, uploadErr := b.storage.UploadPath(ctx,downloaded.Path,downloaded.Name,downloaded.MIME,"")
+		_, uploadErr := b.storage.UploadPath(ctx,api,storagePeer,downloaded.Path,downloaded.Name,downloaded.MIME,"")
 		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
 			failed++
