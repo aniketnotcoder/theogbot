@@ -147,7 +147,6 @@ func (b *Bot) handleMessage(ctx context.Context, msg *incomingMessage) {
 			reply = "Your in-memory Telegram session has been disconnected."
 		} else { reply = "No active Telegram session." }
 	case "/info":
-		connected := b.accounts != nil && b.accounts.Connected(msg.From.ID)
 		status := "disconnected"
 		if b.accounts != nil { status = b.accounts.Status(msg.From.ID) }
 		reply = fmt.Sprintf("TheOGBot MVP\nBackend: Go\nMTProto status: %s\nSession storage: memory only\nDatabase: none", status)
