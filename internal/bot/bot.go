@@ -33,7 +33,7 @@ type update struct {
 type incomingMessage struct {
 	MessageID int64 `json:"message_id"`
 	Text string `json:"text"`
-	Chat struct { ID int64 `json:"id"` } `json:"chat"`
+	Chat struct { ID int64 `json:"id"`; Type string `json:"type"` } `json:"chat"`
 	From struct { ID int64 `json:"id"` } `json:"from"`
 }
 
@@ -97,14 +97,19 @@ func (b *Bot) handleMessage(ctx context.Context, msg *incomingMessage) {
 	if i := strings.IndexByte(command, '@'); i >= 0 { command = command[:i] }
 
 	var reply string
+	if (command == "/code" || command == "/password") && msg.Chat.Type != "private" {
+		_ = b.deleteMessage(ctx, msg.Chat.ID, msg.MessageID)
+		_ = b.sendMessage(ctx, msg.Chat.ID, "For account security, send login codes and 2FA passwords only in a private chat with this bot.")
+		return
+	}
 	switch command {
 	case "/start":
-		reply = "Welcome to TheOGBot.\\n\\n/login +COUNTRYCODEPHONE — connect your Telegram account\\n/code CODE — submit login code\\n/password PASSWORD — submit 2FA password\\n/batch — batch processing (coming next)\\n/copy — accessible chat copy (coming next)\\n/logout — disconnect\\n/info — account status"
+		reply = "Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch — batch processing (coming next)\n/copy — accessible chat copy (coming next)\n/logout — disconnect\n/info — account status"
 	case "/help":
-		reply = "Commands:\\n/start — welcome\\n/login +COUNTRYCODEPHONE — begin MTProto login\\n/code CODE — submit Telegram login code\\n/password PASSWORD — submit 2FA password\\n/batch — process selected posts (next milestone)\\n/copy — copy supported accessible history (next milestone)\\n/logout — disconnect\\n/info — account status\\n\\nUse only your own account. Never share login codes or passwords."
+		reply = "Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit Telegram login code\n/password PASSWORD — submit 2FA password\n/batch — process selected posts (next milestone)\n/copy — copy supported accessible history (next milestone)\n/logout — disconnect\n/info — account status\n\nUse only your own account. Never share login codes or passwords."
 	case "/login":
 		if len(fields) < 2 {
-			reply = "Usage: /login +COUNTRYCODEPHONE\\nThen send /code YOUR_CODE. If prompted, send /password YOUR_2FA_PASSWORD."
+			reply = "Usage: /login +COUNTRYCODEPHONE\nThen send /code YOUR_CODE. If prompted, send /password YOUR_2FA_PASSWORD."
 		} else if b.accounts == nil {
 			reply = "MTProto unavailable. Configure API_ID and API_HASH from my.telegram.org/apps."
 		} else if b.accounts.Connected(msg.From.ID) {
@@ -115,6 +120,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *incomingMessage) {
 			reply = "Login started. Telegram will send a login code to your account. Submit it here using /code YOUR_CODE."
 		}
 	case "/code":
+		_ = b.deleteMessage(ctx, msg.Chat.ID, msg.MessageID)
 		if len(fields) != 2 {
 			reply = "Usage: /code YOUR_TELEGRAM_CODE"
 		} else if err := b.accounts.SubmitCode(msg.From.ID, fields[1]); err != nil {
@@ -123,6 +129,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *incomingMessage) {
 			reply = "Code submitted. If Telegram requests 2-step verification, send /password YOUR_PASSWORD. Check /info after authentication."
 		}
 	case "/password":
+		_ = b.deleteMessage(ctx, msg.Chat.ID, msg.MessageID)
 		password := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
 		if password == "" {
 			reply = "Usage: /password YOUR_2FA_PASSWORD"
@@ -141,13 +148,20 @@ func (b *Bot) handleMessage(ctx context.Context, msg *incomingMessage) {
 		} else { reply = "No active Telegram session." }
 	case "/info":
 		connected := b.accounts != nil && b.accounts.Connected(msg.From.ID)
-		reply = fmt.Sprintf("TheOGBot MVP\\nBackend: Go\\nMTProto session active: %t\\nSession storage: memory only\\nDatabase: none", connected)
+		reply = fmt.Sprintf("TheOGBot MVP\nBackend: Go\nMTProto session active: %t\nSession storage: memory only\nDatabase: none", connected)
 	default:
 		reply = "Unknown command. Send /help."
 	}
 	if err := b.sendMessage(ctx, msg.Chat.ID, reply); err != nil {
 		b.log.Error("send message failed", "chat_id", msg.Chat.ID, "error", err)
 	}
+}
+
+func (b *Bot) deleteMessage(ctx context.Context, chatID, messageID int64) error {
+	return b.call(ctx, "deleteMessage", url.Values{
+		"chat_id": {strconv.FormatInt(chatID, 10)},
+		"message_id": {strconv.FormatInt(messageID, 10)},
+	}, nil)
 }
 
 func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error {
