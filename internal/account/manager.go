@@ -36,6 +36,9 @@ func (m *Manager) Begin(ctx context.Context, userID int64, phone string) error {
   err := client.Run(runCtx, func(clientCtx context.Context) error {
    authenticator := interactiveAuth{phone: phone, code: a.code, pass: a.pass, onState: func(state string) { m.mu.Lock(); if m.users[userID] == a { a.state = state }; m.mu.Unlock() }}
    if err := auth.NewFlow(authenticator, auth.SendCodeOptions{}).Run(clientCtx, client.Auth()); err != nil { return err }
+   m.mu.Lock()
+   if m.users[userID] == a { a.state = "connected" }
+   m.mu.Unlock()
    <-clientCtx.Done()
    return nil
   })
