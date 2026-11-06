@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"path/filepath"
 
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/query/messages"
