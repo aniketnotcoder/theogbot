@@ -133,7 +133,7 @@ func (b *Bot) executeForward(ctx context.Context,api *tg.Client,source tg.InputP
 	if err!=nil{_=b.sendMessage(ctx,chatID,"Cannot resolve this bot as the destination. Open the bot and press Start, then retry. Details: "+err.Error());return}
 	_=b.sendMessage(ctx,chatID,fmt.Sprintf("%s started: %d messages. Using native Telegram forwarding.",label,len(ids)))
 	result,err:=forward.ForwardIDs(ctx,api,source,destination,ids)
-	if err!=nil{_=b.sendMessage(ctx,chatID,fmt.Sprintf("%s stopped after %d/%d messages. Telegram response: %v",label,result.ForwardedBatches*forward.MaxIDsPerRequest,len(ids),len(ids),err));return}
+	if err!=nil{_=b.sendMessage(ctx,chatID,fmt.Sprintf("%s stopped after %d/%d messages. Telegram response: %v",label,min(result.ForwardedBatches*forward.MaxIDsPerRequest,len(ids)),len(ids),err));return}
 	_=b.sendMessage(ctx,chatID,fmt.Sprintf("%s complete. Requested %d messages in %d forwarding batches.",label,result.Requested,result.ForwardedBatches))
 }
 
