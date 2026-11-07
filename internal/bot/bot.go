@@ -44,12 +44,16 @@ type update struct {
 	UpdateID int64 `json:"update_id"`
 	Message *incomingMessage `json:"message"`
 }
+type forwardedChat struct { ID int64 `json:"id"`; Title string `json:"title"`; Username string `json:"username"` }
+type forwardOrigin struct { Type string `json:"type"`; Chat *forwardedChat `json:"chat"`; SenderChat *forwardedChat `json:"sender_chat"` }
+func (o *forwardOrigin) sourceChat() *forwardedChat { if o == nil { return nil }; if o.Chat != nil { return o.Chat }; return o.SenderChat }
+
 type incomingMessage struct {
 	MessageID int64 `json:"message_id"`
 	Text string `json:"text"`
 	Chat struct { ID int64 `json:"id"`; Type string `json:"type"` } `json:"chat"`
 	From struct { ID int64 `json:"id"` } `json:"from"`
-	ForwardOrigin *struct { Type string `json:"type"`; Chat *struct { ID int64 `json:"id"`; Title string `json:"title"`; Username string `json:"username"` } `json:"chat"`; SenderChat *struct { ID int64 `json:"id"`; Title string `json:"title"`; Username string `json:"username"` } `json:"sender_chat"` } `json:"forward_origin"`
+	ForwardOrigin *forwardOrigin `json:"forward_origin"`
 }
 type destination struct { ChatID int64; Title string; Username string }
 type botIdentity struct { Username string `json:"username"` }
