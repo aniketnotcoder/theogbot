@@ -38,11 +38,23 @@ type Bot struct {
 	destMu sync.RWMutex
 	destinations map[int64]destination
 	awaitingDestination map[int64]bool
+	pendingInput map[int64]string
 }
 
 type update struct {
 	UpdateID int64 `json:"update_id"`
 	Message *incomingMessage `json:"message"`
+	Callback *callbackQuery `json:"callback_query"`
+}
+type callbackQuery struct {
+	ID string `json:"id"`
+	Data string `json:"data"`
+	From struct { ID int64 `json:"id"` } `json:"from"`
+	Message *callbackMessage `json:"message"`
+}
+type callbackMessage struct {
+	MessageID int64 `json:"message_id"`
+	Chat struct { ID int64 `json:"id"`; Type string `json:"type"` } `json:"chat"`
 }
 type forwardedChat struct { ID int64 `json:"id"`; Title string `json:"title"`; Username string `json:"username"` }
 type forwardOrigin struct { Type string `json:"type"`; Chat *forwardedChat `json:"chat"`; SenderChat *forwardedChat `json:"sender_chat"` }
@@ -59,21 +71,76 @@ type destination struct { ChatID int64; Title string; Username string }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"` }
 
-type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; mu sync.Mutex; last time.Time; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
+type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; mu sync.Mutex; last time.Time; displayStage string; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
 
 func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total int) (*progressReporter, error) {
 	var sent sentMessage
-	if err := b.call(ctx, "sendMessage", url.Values{"chat_id":{strconv.FormatInt(chatID,10)}, "text":{fmt.Sprintf("%s: preparing %d messages…", label,total)}}, &sent); err != nil { return nil, err }
+	markup:=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel transfer","callback_data":"job:cancel"}}}}
+	if err := b.call(ctx, "sendMessage", url.Values{
+		"chat_id":{strconv.FormatInt(chatID,10)},
+		"text":{formatProgress(label,"Preparing",0,total,0,0,0,0,0,0,time.Since(time.Now()))},
+		"reply_markup":{mustJSON(markup)},
+	}, &sent); err != nil { return nil, err }
 	return &progressReporter{bot:b,chatID:chatID,messageID:sent.MessageID,label:label,total:total,started:time.Now()},nil
 }
 
-func formatProgress(label, stage string, current, total, done, failed, skipped int, elapsed time.Duration) string {
-	processed := done+failed+skipped
-	percent := 0
-	if total > 0 { percent = processed*100/total }
-	eta := "calculating…"
-	if processed > 0 && total > processed { remaining := time.Duration(float64(elapsed)*float64(total-processed)/float64(processed)); eta = remaining.Round(time.Second).String() } else if processed >= total { eta = "0s" }
-	return fmt.Sprintf("%s · %d%%\nStage: %s\nItem: %d/%d\nUploaded: %d · Failed: %d · Skipped: %d\nElapsed: %s · ETA: %s",label,percent,stage,current,total,done,failed,skipped,elapsed.Round(time.Second),eta)
+func mustJSON(value any) string { raw,_:=json.Marshal(value);return string(raw) }
+
+func progressBar(percent int) string {
+	if percent<0 { percent=0 };if percent>100 { percent=100 }
+	filled:=percent*16/100
+	if percent>0&&filled==0 { filled=1 }
+	return strings.Repeat("━",filled)+strings.Repeat("·",16-filled)
+}
+
+func progressETA(d time.Duration) string {
+	if d>0&&d<time.Second { return "<1s" }
+	return d.Round(time.Second).String()
+}
+
+func progressStage(stage string) string {
+	s:=strings.ToLower(stage)
+	switch {
+	case strings.Contains(s,"cancel"): return "Cancelling"
+	case strings.Contains(s,"finish"): return "Finishing"
+	case strings.Contains(s,"upload"): return "Uploading"
+	case strings.Contains(s,"download"): return "Downloading"
+	case strings.Contains(s,"retriev"),strings.Contains(s,"ready"),strings.Contains(s,"prepar"): return "Preparing"
+	default: return "Transferring"
+	}
+}
+
+func formatProgress(label, stage string, current, total, done, failed, skipped int, byteCurrent, byteTotal int64, speed float64, elapsed time.Duration) string {
+	processed:=done+failed+skipped
+	percent:=0
+	if total>0 { percent=processed*100/total }
+	if percent>100 { percent=100 }
+	if byteTotal>0 {
+		bytePercent:=int(float64(byteCurrent)*100/float64(byteTotal))
+		if bytePercent<0 { bytePercent=0 };if bytePercent>100 { bytePercent=100 }
+		percent=bytePercent
+	}
+	title:=strings.ToUpper(strings.TrimSpace(label))
+	if title=="" { title="TRANSFER" }
+	if strings.Contains(strings.ToLower(stage),"finish") && processed>=total {
+		title="TRANSFER COMPLETE"
+		if failed>0||skipped>0 { title="TRANSFER FINISHED" }
+	}
+	if strings.Contains(strings.ToLower(stage),"cancel") { title="TRANSFER CANCELLED" }
+	line:=fmt.Sprintf("%s\n\n%s  ·  %d%%\n%s\n%d of %d items",title,progressStage(stage),percent,progressBar(percent),processed,total)
+	if byteTotal>0 {
+		line+=fmt.Sprintf("\n%s of %s",humanBytes(byteCurrent),humanBytes(byteTotal))
+		if speed>0 { line+="  ·  "+humanSpeed(speed) }
+		if byteCurrent<byteTotal&&speed>0 { line+="\nAbout "+progressETA(time.Duration(float64(byteTotal-byteCurrent)/speed*float64(time.Second)))+" left" }
+	} else if processed>0&&total>processed {
+		remaining:=time.Duration(float64(elapsed)*float64(total-processed)/float64(processed)).Round(time.Second)
+		line+="\nAbout "+progressETA(remaining)+" left"
+	} else if processed>=total&&total>0 {
+		line+="\nCompleted in "+elapsed.Round(time.Second).String()
+	}
+	if failed>0||skipped>0 { line+=fmt.Sprintf("\n\n%d failed  ·  %d skipped",failed,skipped) }
+	if processed>=total&&total>0&&byteTotal>0 { line+="\nCompleted in "+elapsed.Round(time.Second).String() }
+	return line
 }
 
 func humanBytes(n int64) string { const unit=1024; if n<unit{return fmt.Sprintf("%d B",n)}; div,exp:=int64(unit),0;for v:=n/unit;v>=unit;v/=unit{div*=unit;exp++};return fmt.Sprintf("%.1f %ciB",float64(n)/float64(div),"KMGTPE"[exp]) }
@@ -94,10 +161,16 @@ func (p *progressReporter) recordByteSample(stage string,current,total int64,now
 	p.sampleBytes, p.sampleAt = current, now
 }
 
+func (p *progressReporter) resetForStage(stage string) {
+	p.mu.Lock()
+	if p.displayStage!=progressStage(stage) { p.displayStage=progressStage(stage);p.bytesCurrent=0;p.bytesTotal=0;p.speed=0 }
+	p.mu.Unlock()
+}
 func (p *progressReporter) updateBytes(ctx context.Context,stage string,current,total int64,item,done,failed,skipped int){
 	if p==nil{return}
 	now:=time.Now()
 	p.recordByteSample(stage,current,total,now)
+	p.resetForStage(stage)
 	p.mu.Lock()
 	p.bytesCurrent,p.bytesTotal=current,total
 	p.mu.Unlock()
@@ -106,10 +179,14 @@ func (p *progressReporter) updateBytes(ctx context.Context,stage string,current,
 func (p *progressReporter) update(ctx context.Context, stage string, current, done, failed, skipped int, force bool) {
 	if p==nil||p.messageID==0{return};now:=time.Now();p.mu.Lock()
 	if !force&&now.Sub(p.last)<900*time.Millisecond{p.mu.Unlock();return};p.last=now
+	if p.displayStage!=progressStage(stage) { p.displayStage=progressStage(stage);p.bytesCurrent=0;p.bytesTotal=0;p.speed=0 }
 	bytesCurrent,bytesTotal,speed:=p.bytesCurrent,p.bytesTotal,p.speed;p.mu.Unlock()
-	text:=formatProgress(p.label,stage,current,p.total,done,failed,skipped,now.Sub(p.started))
-	if bytesCurrent>0{if bytesTotal>0{percent:=int(float64(bytesCurrent)*100/float64(bytesTotal));if percent>100{percent=100};text+=fmt.Sprintf("\nBytes: %s / %s (%d%%)",humanBytes(bytesCurrent),humanBytes(bytesTotal),percent)}else{text+="\nBytes: "+humanBytes(bytesCurrent)};text+="\nSpeed: "+humanSpeed(speed);if bytesTotal>bytesCurrent&&speed>0{text+=" · Byte ETA: "+(time.Duration(float64(bytesTotal-bytesCurrent)/speed*float64(time.Second))).Round(time.Second).String()}}
-	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text}}
+	text:=formatProgress(p.label,stage,current,p.total,done,failed,skipped,bytesCurrent,bytesTotal,speed,now.Sub(p.started))
+	markup:=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel transfer","callback_data":"job:cancel"}}}}
+	if done+failed+skipped>=p.total || strings.Contains(strings.ToLower(stage),"cancel") || strings.Contains(strings.ToLower(stage),"finish") {
+		markup=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Back to menu","callback_data":"menu:home"},{"text":"New batch","callback_data":"transfer:batch"}}}}
+	}
+	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text},"reply_markup":{mustJSON(markup)}}
 	if err:=p.bot.call(ctx,"editMessageText",values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
 }
 type apiResponse[T any] struct {
@@ -119,10 +196,12 @@ type apiResponse[T any] struct {
 }
 
 func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
-	return &Bot{token: token, client: &http.Client{
+	app:=&Bot{token: token, client: &http.Client{
 		Timeout: 45*time.Second,
 		Transport: &http.Transport{Proxy:http.ProxyFromEnvironment,MaxIdleConns:100,MaxIdleConnsPerHost:20,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:10*time.Second,ResponseHeaderTimeout:40*time.Second,DialContext:(&net.Dialer{Timeout:10*time.Second,KeepAlive:30*time.Second}).DialContext},
-	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool)}
+	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool),pendingInput:make(map[int64]string)}
+	if accounts!=nil { accounts.SetNotifier(app.onAccountEvent) }
+	return app
 }
 
 func (b *Bot) SetStorage(client *storage.Client) { b.storage = client }
@@ -137,24 +216,35 @@ func (b *Bot) Run(ctx context.Context) error {
 	for {
 		if ctx.Err()!=nil{return nil}
 		var updates []update
-		err:=b.call(ctx,"getUpdates",url.Values{"offset":{strconv.FormatInt(b.offset,10)},"timeout":{"30"},"allowed_updates":{"[\"message\"]"}},&updates)
+		err:=b.call(ctx,"getUpdates",url.Values{"offset":{strconv.FormatInt(b.offset,10)},"timeout":{"30"},"allowed_updates":{"[\"message\",\"callback_query\"]"}},&updates)
 		if err!=nil { if ctx.Err()!=nil{return nil};b.log.Warn("getUpdates failed","error",err);select{case <-ctx.Done():return nil;case <-time.After(2*time.Second):};continue }
-		for _,u:=range updates { if u.UpdateID>=b.offset{b.offset=u.UpdateID+1};if u.Message!=nil{b.handleMessage(ctx,u.Message)} }
+		for _,u:=range updates {
+			if u.UpdateID>=b.offset { b.offset=u.UpdateID+1 }
+			if u.Callback!=nil { b.handleCallback(ctx,u.Callback) }
+			if u.Message!=nil { b.handleMessage(ctx,u.Message) }
+		}
 	}
 }
 
 func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	text:=strings.TrimSpace(msg.Text);if msg.Chat.ID==0{return};if b.captureForwardedDestination(ctx,msg) { return };if text=="" { return }
+	if msg.Chat.Type=="private" && !strings.HasPrefix(text,"/") && b.handlePendingInput(ctx,msg,text) { return }
 	fields:=strings.Fields(text);command:=strings.ToLower(fields[0]);if i:=strings.IndexByte(command,'@');i>=0{command=command[:i]}
 	var reply string
 	if (command=="/code"||command=="/password")&&msg.Chat.Type!="private"{_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);_=b.sendMessage(ctx,msg.Chat.ID,"For account security, send login codes and 2FA passwords only in a private chat with this bot.");return}
 	switch command {
-	case "/start":
-		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer selected posts\n/copy CHAT_LINK [LIMIT] — copy accessible chat history (default: 100, max: 50000)\n/cancel — cancel your active transfer\n/setstorage — configure destination by forwarding a message\n/storage — your destination status\n/logout — disconnect\n/info — account status"
+	case "/start", "/menu":
+		b.sendMenu(ctx,msg.Chat.ID,"THEOGBOT\n\nYour transfers, in one place.\nChoose an action.")
+		return
 	case "/help":
-		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer only the linked posts, in supplied order\n/copy CHAT_LINK [LIMIT] — copy accessible history, default 100, max 50000\n/cancel — cancel your active transfer\n/setstorage — configure destination by forwarding a message\n/storage — destination status\n/logout — disconnect\n/info — account status\n\nUse chats your account can access. Telegram restrictions and flood waits are respected."
+		b.sendMenu(ctx,msg.Chat.ID,"Use the buttons for setup and transfers. You can still use commands if you prefer.")
+		return
 	case "/login":
-		if len(fields)<2{reply="Usage: /login +COUNTRYCODEPHONE\nThen /code YOUR_CODE and, if prompted, /password YOUR_2FA_PASSWORD"}else if b.accounts==nil{reply="MTProto unavailable. Configure API_ID and API_HASH."}else if b.accounts.Connected(msg.From.ID){reply="An account session is already active. Use /logout first."}else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil{reply="Could not start login: "+err.Error()}else{reply="Login started. Submit the Telegram code here using /code YOUR_CODE."}
+		if msg.Chat.Type!="private" { reply="For security, start account login in a private chat with this bot." } else if b.accounts==nil { reply="MTProto unavailable. Configure API_ID and API_HASH." } else if len(fields)<2 {
+			b.setPendingInput(msg.From.ID,"phone")
+			b.sendForceReply(ctx,msg.Chat.ID,"🔐 Connect Telegram account\nSend your phone number with country code, for example +911234567890.","Phone number")
+			return
+		} else if b.accounts.Connected(msg.From.ID) { reply="An account session is already active. Use Logout first." } else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil { reply="Could not start login: "+err.Error() } else { reply="Login started. Waiting for Telegram's code prompt…" }
 	case "/code":
 		_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
 		if len(fields)!=2{reply="Usage: /code YOUR_TELEGRAM_CODE"}else if err:=b.accounts.SubmitCode(msg.From.ID,fields[1]);err!=nil{reply="Could not submit code: "+err.Error()}else{reply="Code submitted. If Telegram requests 2-step verification, send /password YOUR_PASSWORD."}
@@ -180,7 +270,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(msg.From.ID)}
-		reply=fmt.Sprintf("TheOGBot\nBackend: Go\nMTProto: %s\nSession storage: memory only\nTransfer: MTProto download → upload",status)
+		reply=fmt.Sprintf("TheOGBot\n\nAccount: %s\nDestination: %s",status,b.destinationStatus(msg.From.ID))
 	default: reply="Unknown command. Send /help."
 	}
 	if err:=b.sendMessage(ctx,msg.Chat.ID,reply);err!=nil{b.log.Error("send message failed","chat_id",msg.Chat.ID,"error",err)}
@@ -446,6 +536,119 @@ func (b *Bot) captureForwardedDestination(ctx context.Context, msg *incomingMess
 
 func (b *Bot) deleteMessage(ctx context.Context,chatID,messageID int64)error{return b.call(ctx,"deleteMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(messageID,10)}},nil)}
 func (b *Bot) sendMessage(ctx context.Context,chatID int64,text string)error{return b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{text}},nil)}
+func (b *Bot) sendMessageMarkup(ctx context.Context,chatID int64,text string,markup any) error {
+	raw,err:=json.Marshal(markup);if err!=nil{return err}
+	return b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{text},"reply_markup":{string(raw)}},nil)
+}
+func (b *Bot) sendForceReply(ctx context.Context,chatID int64,text,placeholder string) {
+	markup:=map[string]any{"force_reply":true,"selective":true,"input_field_placeholder":placeholder}
+	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("force-reply prompt failed","chat_id",chatID,"error",err)}
+}
+func (b *Bot) sendMenu(ctx context.Context,chatID int64,text string) {
+	markup:=map[string]any{"inline_keyboard":[][]map[string]string{
+		{{"text":"Connect account","callback_data":"login:start"},{"text":"Set destination","callback_data":"storage:set"}},
+		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
+		{{"text":"Account","callback_data":"account:status"},{"text":"Help","callback_data":"help"}},
+		{{"text":"Cancel transfer","callback_data":"job:cancel"},{"text":"Log out","callback_data":"account:logout"}},
+	}}
+	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("menu send failed","chat_id",chatID,"error",err)}
+}
+func (b *Bot) setPendingInput(userID int64,kind string){b.destMu.Lock();b.pendingInput[userID]=kind;b.destMu.Unlock()}
+func (b *Bot) takePendingInput(userID int64)string{b.destMu.Lock();defer b.destMu.Unlock();kind:=b.pendingInput[userID];delete(b.pendingInput,userID);return kind}
+func (b *Bot) destinationStatus(userID int64)string{if d,ok:=b.getDestination(userID);ok{return d.Title};return "not configured"}
+func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value string)bool{
+	kind:=b.takePendingInput(msg.From.ID)
+	if kind!="" {
+		_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
+		switch kind {
+		case "phone":
+			if b.accounts==nil{_ = b.sendMessage(ctx,msg.Chat.ID,"MTProto login is unavailable.");return true}
+			if err:=b.accounts.Begin(ctx,msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not start login: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"Login started. Waiting for the verification prompt…")}
+		case "batch":
+			links:=strings.Fields(value);if len(links)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send one or more Telegram post links.");return true}
+			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,links)}()}
+		case "copy":
+			fields:=strings.Fields(value);if len(fields)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send a Telegram chat link, optionally followed by a limit.");return true}
+			limit:=100;if len(fields)>1{n,err:=strconv.Atoi(fields[1]);if err!=nil||n<1||n>50000{_ = b.sendMessage(ctx,msg.Chat.ID,"Limit must be between 1 and 50000.");return true};limit=n}
+			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],limit)}()}
+		}
+		return true
+	}
+	if b.accounts!=nil {
+		switch b.accounts.Status(msg.From.ID) {
+		case "awaiting_code":
+			_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
+			if err:=b.accounts.SubmitCode(msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not submit verification code: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"Code received. Checking…")}
+			return true
+		case "awaiting_password":
+			_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
+			if err:=b.accounts.SubmitPassword(msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not submit 2-step password: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"Password received. Checking…")}
+			return true
+		}
+	}
+	return false
+}
+func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
+	if q==nil{return}
+	_ = b.call(ctx,"answerCallbackQuery",url.Values{"callback_query_id":{q.ID}},nil)
+	if q.Message==nil{return}
+	chatID,userID:=q.Message.Chat.ID,q.From.ID
+	if chatID!=userID { return }
+	if q.Message.Chat.Type!="private" { _ = b.sendMessage(ctx,chatID,"Open the bot's private chat and send /start to use these controls securely."); return }
+	switch q.Data {
+	case "login:start":
+		b.setPendingInput(userID,"phone")
+		b.sendForceReply(ctx,chatID,"Connect your Telegram account\nSend your phone number including country code, for example +911234567890.","Phone number")
+	case "login:cancel":
+		if b.accounts!=nil{b.accounts.Logout(userID)}
+		_ = b.sendMessage(ctx,chatID,"Login cancelled. You can start again whenever you're ready.")
+	case "login:retry":
+		if b.accounts==nil { _ = b.sendMessage(ctx,chatID,"MTProto login is unavailable.") } else if err:=b.accounts.Retry(ctx,userID);err!=nil { _ = b.sendMessage(ctx,chatID,"Could not restart login: "+err.Error()) } else { _ = b.sendMessage(ctx,chatID,"🔐 A fresh login attempt has started. Wait for the new Telegram code prompt.") }
+	case "storage:set":
+		b.destMu.Lock();b.awaitingDestination[userID]=true;b.destMu.Unlock()
+		_ = b.sendMessage(ctx,chatID,"📦 Forward any message from your destination group/channel here. The configured uploader bot must already have posting permission.")
+	case "transfer:batch":
+		b.setPendingInput(userID,"batch")
+		b.sendForceReply(ctx,chatID,"📥 Send one or more Telegram post links, separated by spaces or new lines.","Telegram post links")
+	case "transfer:copy":
+		b.setPendingInput(userID,"copy")
+		b.sendForceReply(ctx,chatID,"🗂 Send a Telegram chat link and optionally a message limit (default 100).","Chat link [limit]")
+	case "job:cancel":
+		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"⛔ Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
+	case "account:logout":
+		if b.accounts!=nil&&b.accounts.Logout(userID){_ = b.sendMessage(ctx,chatID,"🚪 Your in-memory Telegram session has been disconnected.")}else{_ = b.sendMessage(ctx,chatID,"No active account session.")}
+	case "account:status":
+		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(userID)}
+		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("Account: %s\nDestination: %s",status,b.destinationStatus(userID)))
+	case "help":
+		_ = b.sendMessage(ctx,chatID,"Choose an action from the menu. During login, reply directly to each secure prompt. During a transfer, use the Cancel transfer button if you need to stop.") 
+	case "menu:home":
+		b.sendMenu(ctx,chatID,"THEOGBOT\n\nYour transfers, in one place.\nChoose an action.")
+	}
+}
+func (b *Bot) onAccountEvent(userID int64,state string,err error){
+	ctx,cancel:=context.WithTimeout(context.Background(),12*time.Second);defer cancel()
+	switch state {
+	case "awaiting_code":
+		_ = b.sendMessage(ctx,userID,"Telegram verification code requested. Reply to the next prompt with the code. Do not share it with anyone.")
+		b.sendForceReply(ctx,userID,"Enter the Telegram login code sent to your Telegram account.","Telegram login code")
+		b.sendMessageMarkup(ctx,userID,"Login controls:",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel login","callback_data":"login:cancel"}}}})
+	case "awaiting_password":
+		_ = b.sendMessage(ctx,userID,"Two-step verification is enabled on this account.")
+		b.sendForceReply(ctx,userID,"Enter your Telegram 2-step verification password.","2-step password")
+		b.sendMessageMarkup(ctx,userID,"Login controls:",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel login","callback_data":"login:cancel"}}}})
+	case "connected":
+		b.sendMenu(ctx,userID,"Telegram account connected. Choose your next action.")
+	case "failed":
+		message:="Telegram login failed. Start again using Connect account."
+		if err!=nil{lower:=strings.ToLower(err.Error());switch{case strings.Contains(lower,"phone_code_expired"):message="That verification code expired. Choose Retry to request a fresh code.";case strings.Contains(lower,"phone_code_invalid"):message="Telegram rejected that code. Choose Retry to request a fresh code.";case strings.Contains(lower,"password_hash_invalid"):message="Incorrect 2-step verification password. Choose Retry to try again.";default:message="❌ Login failed: "+err.Error()}}
+		b.sendMessageMarkup(ctx,userID,message,map[string]any{"inline_keyboard":[][]map[string]string{
+			{{"text":"Retry with same number","callback_data":"login:retry"}},
+			{{"text":"Use another number","callback_data":"login:start"}},
+		}})
+	}
+}
+
 func (b *Bot) call(ctx context.Context,method string,values url.Values,out any)error{
 	if values==nil{values=url.Values{}}
 	req,err:=http.NewRequestWithContext(ctx,http.MethodPost,telegramAPI+"/bot"+b.token+"/"+method,strings.NewReader(values.Encode()));if err!=nil{return err}
