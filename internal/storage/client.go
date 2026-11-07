@@ -23,8 +23,9 @@ import (
 
 type TransferProgress func(current, total int64)
 
-// Telegram allows upload parts up to 512 KiB. gotd v0.130 defaults to
-// 128 KiB, which can exceed server part-count limits on large files.
+// Use Telegram's maximum supported upload part size to keep large files
+// below the server's part-count ceiling. gotd handles safe MTProto request
+// retries after connection loss; do not retry an uncertain final message send.
 const uploadThreads = 8
 const uploadPartSize = uploader.MaximumPartSize
 
