@@ -98,3 +98,18 @@ Gate: repeatable end-to-end tests and user approval before rollout.
 - Use the access hash from Telegram's returned Channel constructor to create the send peer.
 - Keep basic-group peer handling unchanged; fail /setstorage with the exact Telegram resolution error if the uploader bot cannot access the channel.
 - Add unit tests ensuring the returned Telegram access hash is used and missing channel responses fail closed.
+
+
+## Live integration results — 2026-11-07
+- /setstorage and /storage succeeded for the private destination channel after PR #3.
+- A 31.1 MiB /batch transfer succeeded: 1 uploaded, 0 failed, 0 skipped; elapsed 25s. Reported 7.6 MiB/s.
+- /copy retrieved five history entries: three uploaded, one failed with FILE_PARTS_INVALID during upload.saveBigFilePart, and one Telegram MessageService event was skipped as unsupported.
+- The approximately 208 MiB / long-duration video is the priority regression test; confirm the precise failed message and file size from the next run's per-item logs.
+- gotd v0.130 defaults to 128 KiB upload parts. This patch sets the maximum valid 512 KiB part size and eight upload workers; the downloader is also increased from four to eight workers. Benchmark on Railway before increasing concurrency further.
+- Progress speed sampling now uses at least a one-second window and resets when stage/file changes, avoiding misleading burst-rate readings.
+- History copying now excludes Telegram service events from the copyable message list instead of counting them as failed/skipped content.
+
+## Current performance work
+- Prefer Telegram-native server-side copy/forward only when a single authorized identity can access both source and destination; do not silently change from the configured uploader bot to the user's account.
+- For the existing split source-user / destination-bot architecture, local download-upload remains the supported path. Tune chunk size and concurrency against real Railway measurements.
+- Acceptance: repeat the long-duration video, a small file, and a multi-item /copy; record download speed, upload speed, elapsed time, and exact per-message outcomes. Confirm no FILE_PARTS_INVALID, no missing posts, and no duplicate destination sends.

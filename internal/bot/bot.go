@@ -59,7 +59,7 @@ type destination struct { ChatID int64; Title string; Username string }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"` }
 
-type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; mu sync.Mutex; last time.Time; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64 }
+type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; mu sync.Mutex; last time.Time; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
 
 func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total int) (*progressReporter, error) {
 	var sent sentMessage
@@ -78,10 +78,29 @@ func formatProgress(label, stage string, current, total, done, failed, skipped i
 
 func humanBytes(n int64) string { const unit=1024; if n<unit{return fmt.Sprintf("%d B",n)}; div,exp:=int64(unit),0;for v:=n/unit;v>=unit;v/=unit{div*=unit;exp++};return fmt.Sprintf("%.1f %ciB",float64(n)/float64(div),"KMGTPE"[exp]) }
 func humanSpeed(n float64) string { if n<=0{return "calculating…"};return humanBytes(int64(n))+"/s" }
+func (p *progressReporter) recordByteSample(stage string,current,total int64,now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sampleAt.IsZero() || p.sampleStage != stage || p.sampleTotal != total || current < p.sampleBytes {
+		p.speed = 0
+		p.sampleBytes, p.sampleAt = current, now
+		p.sampleStage, p.sampleTotal = stage, total
+		return
+	}
+	elapsed := now.Sub(p.sampleAt)
+	if elapsed < time.Second { return }
+	instant := float64(current-p.sampleBytes) / elapsed.Seconds()
+	if p.speed == 0 { p.speed = instant } else { p.speed = p.speed*0.65 + instant*0.35 }
+	p.sampleBytes, p.sampleAt = current, now
+}
+
 func (p *progressReporter) updateBytes(ctx context.Context,stage string,current,total int64,item,done,failed,skipped int){
-	if p==nil{return};now:=time.Now();p.mu.Lock()
-	if !p.sampleAt.IsZero()&&now.After(p.sampleAt)&&current>=p.sampleBytes{seconds:=now.Sub(p.sampleAt).Seconds();if seconds>0{instant:=float64(current-p.sampleBytes)/seconds;if p.speed==0{p.speed=instant}else{p.speed=p.speed*0.65+instant*0.35}}}
-	p.bytesCurrent,p.bytesTotal,p.sampleBytes,p.sampleAt=current,total,current,now;p.mu.Unlock()
+	if p==nil{return}
+	now:=time.Now()
+	p.recordByteSample(stage,current,total,now)
+	p.mu.Lock()
+	p.bytesCurrent,p.bytesTotal=current,total
+	p.mu.Unlock()
 	p.update(ctx,stage,item,done,failed,skipped,false)
 }
 func (p *progressReporter) update(ctx context.Context, stage string, current, done, failed, skipped int, force bool) {
