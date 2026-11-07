@@ -156,12 +156,17 @@ func (p *progressReporter) recordByteSample(stage string,current,total int64,now
 	p.sampleBytes, p.sampleAt = current, now
 }
 
+func (p *progressReporter) resetForStage(stage string) {
+	p.mu.Lock()
+	if p.displayStage!=progressStage(stage) { p.displayStage=progressStage(stage);p.bytesCurrent=0;p.bytesTotal=0;p.speed=0 }
+	p.mu.Unlock()
+}
 func (p *progressReporter) updateBytes(ctx context.Context,stage string,current,total int64,item,done,failed,skipped int){
 	if p==nil{return}
 	now:=time.Now()
 	p.recordByteSample(stage,current,total,now)
+	p.resetForStage(stage)
 	p.mu.Lock()
-	if p.displayStage!=progressStage(stage) { p.displayStage=progressStage(stage);p.bytesCurrent=0;p.bytesTotal=0;p.speed=0 }
 	p.bytesCurrent,p.bytesTotal=current,total
 	p.mu.Unlock()
 	p.update(ctx,stage,item,done,failed,skipped,false)

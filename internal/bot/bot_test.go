@@ -70,15 +70,15 @@ func TestAlbumGroupLengthUsesOnlyAdjacentSameGroupMessages(t *testing.T) {
 }
 
 func TestFormatProgressShowsCountsStageAndETA(t *testing.T) {
-	got := formatProgress("Batch","Uploading",3,4,1,1,0,10*time.Second)
-	for _, want := range []string{"Batch · 50%","Stage: Uploading","Item: 3/4","Uploaded: 1 · Failed: 1 · Skipped: 0","Elapsed: 10s","ETA: 10s"} {
+	got := formatProgress("Batch","Uploading",3,4,1,1,0,0,0,0,10*time.Second)
+	for _, want := range []string{"BATCH","Uploading  ·  50%","2 of 4 items","About 10s left"} {
 		if !strings.Contains(got,want) { t.Errorf("progress text %q does not contain %q",got,want) }
 	}
 }
 
 func TestFormatProgressCompletesAtHundredPercent(t *testing.T) {
-	got := formatProgress("Copy","Finished",4,4,3,1,0,12*time.Second)
-	if !strings.Contains(got,"Copy · 100%") || !strings.Contains(got,"ETA: 0s") { t.Fatalf("unexpected completed progress: %s",got) }
+	got := formatProgress("Copy","Finished",4,4,3,1,0,0,0,0,12*time.Second)
+	if !strings.Contains(got,"TRANSFER FINISHED") || !strings.Contains(got,"100%") || !strings.Contains(got,"4 of 4 items") { t.Fatalf("unexpected completed progress: %s",got) }
 }
 
 func TestDestinationMessageRefsForPublicChannel(t *testing.T) {
@@ -149,7 +149,7 @@ func TestProgressCompletionHasNoDebugFields(t *testing.T) {
 
 func TestProgressResetsPerFilePhase(t *testing.T) {
 	p:=&progressReporter{total:2,displayStage:"Uploading",bytesCurrent:900,bytesTotal:900,speed:100}
-	p.update(context.Background(),"Downloading",1,0,0,0,true)
+	p.resetForStage("Downloading")
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.bytesCurrent!=0||p.bytesTotal!=0||p.speed!=0 {t.Fatalf("stale upload progress carried into download: current=%d total=%d speed=%f",p.bytesCurrent,p.bytesTotal,p.speed)}
