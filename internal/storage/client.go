@@ -179,31 +179,29 @@ func (c *Client) ResolvePeer(ctx context.Context, target string) (tg.InputPeerCl
 	return resolveTarget(ctx, api, target)
 }
 
-func resolveTarget(ctx context.Context, api *tg.Client, target string) (tg.InputPeerClass, error) {
+func resolveTarget(_ context.Context, _ *tg.Client, target string) (tg.InputPeerClass, error) {
 	target = strings.TrimSpace(target)
-	if target == "" { return nil, errors.New("STORAGE_TARGET is empty") }
-	if !strings.HasPrefix(target, "-") { return nil, fmt.Errorf("private numeric storage target required; public usernames are resolved by the sender at upload time") }
+	if target == "" { return nil, errors.New("storage chat ID is empty") }
 	id, err := strconv.ParseInt(target, 10, 64)
-	if err != nil { return nil, fmt.Errorf("invalid numeric chat ID %q", target) }
-	result, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{OffsetPeer:&tg.InputPeerEmpty{}, Limit:200, Hash:0})
-	if err != nil { return nil, fmt.Errorf("read storage bot dialogs: %w", err) }
-	var chats []tg.ChatClass
-	switch v := result.(type) {
-	case *tg.MessagesDialogs: chats = v.Chats
-	case *tg.MessagesDialogsSlice: chats = v.Chats
-	default: return nil, fmt.Errorf("unsupported dialogs response %T", result)
-	}
-	if id <= -1000000000000 {
+	if err != nil || id >= 0 { return nil, fmt.Errorf("invalid Telegram Bot API chat ID %q: expected a negative numeric ID", target) }
+
+	// Telegram explicitly disallows messages.getDialogs for bot accounts
+	// (BOT_METHOD_INVALID). Bot API chat IDs encode the peer type; bots must
+	// use access_hash=0 when constructing an InputPeerChannel if no full
+	// access hash is available. Telegram validates membership and write
+	// permissions when the uploader sends the first message.
+	if id <= -1000000000001 {
 		channelID := -id - 1000000000000
-		for _, item := range chats { if ch, ok := item.(*tg.Channel); ok && int64(ch.ID)==channelID {
-			if ch.AccessHash==0 { return nil, errors.New("storage channel access hash unavailable") }
-			return &tg.InputPeerChannel{ChannelID:ch.ID,AccessHash:ch.AccessHash},nil
-		} }
-	} else if id < 0 {
-		chatID := -id
-		for _, item := range chats { if ch, ok := item.(*tg.Chat); ok && int64(ch.ID)==chatID { return &tg.InputPeerChat{ChatID:ch.ID},nil } }
+		if channelID <= 0 || channelID > 997852516352 {
+			return nil, fmt.Errorf("invalid Telegram channel ID in chat ID %q", target)
+		}
+		return &tg.InputPeerChannel{ChannelID:int64(channelID), AccessHash:0}, nil
 	}
-	return nil, fmt.Errorf("storage chat %s was not found in the bot's dialogs; add the bot to that group/channel first", target)
+	chatID := -id
+	if chatID <= 0 || chatID > 2147483647 {
+		return nil, fmt.Errorf("invalid basic group ID in chat ID %q", target)
+	}
+	return &tg.InputPeerChat{ChatID:int64(chatID)}, nil
 }
 
 func captionOptions(caption string, entities []tg.MessageEntityClass) []styling.StyledTextOption {
