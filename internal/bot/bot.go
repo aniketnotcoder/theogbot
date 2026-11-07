@@ -38,11 +38,23 @@ type Bot struct {
 	destMu sync.RWMutex
 	destinations map[int64]destination
 	awaitingDestination map[int64]bool
+	pendingInput map[int64]string
 }
 
 type update struct {
 	UpdateID int64 `json:"update_id"`
 	Message *incomingMessage `json:"message"`
+	Callback *callbackQuery `json:"callback_query"`
+}
+type callbackQuery struct {
+	ID string `json:"id"`
+	Data string `json:"data"`
+	From struct { ID int64 `json:"id"` } `json:"from"`
+	Message *callbackMessage `json:"message"`
+}
+type callbackMessage struct {
+	MessageID int64 `json:"message_id"`
+	Chat struct { ID int64 `json:"id"`; Type string `json:"type"` } `json:"chat"`
 }
 type forwardedChat struct { ID int64 `json:"id"`; Title string `json:"title"`; Username string `json:"username"` }
 type forwardOrigin struct { Type string `json:"type"`; Chat *forwardedChat `json:"chat"`; SenderChat *forwardedChat `json:"sender_chat"` }
@@ -119,10 +131,12 @@ type apiResponse[T any] struct {
 }
 
 func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
-	return &Bot{token: token, client: &http.Client{
+	app:=&Bot{token: token, client: &http.Client{
 		Timeout: 45*time.Second,
 		Transport: &http.Transport{Proxy:http.ProxyFromEnvironment,MaxIdleConns:100,MaxIdleConnsPerHost:20,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:10*time.Second,ResponseHeaderTimeout:40*time.Second,DialContext:(&net.Dialer{Timeout:10*time.Second,KeepAlive:30*time.Second}).DialContext},
-	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool)}
+	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool),pendingInput:make(map[int64]string)}
+	if accounts!=nil { accounts.SetNotifier(app.onAccountEvent) }
+	return app
 }
 
 func (b *Bot) SetStorage(client *storage.Client) { b.storage = client }
@@ -137,24 +151,35 @@ func (b *Bot) Run(ctx context.Context) error {
 	for {
 		if ctx.Err()!=nil{return nil}
 		var updates []update
-		err:=b.call(ctx,"getUpdates",url.Values{"offset":{strconv.FormatInt(b.offset,10)},"timeout":{"30"},"allowed_updates":{"[\"message\"]"}},&updates)
+		err:=b.call(ctx,"getUpdates",url.Values{"offset":{strconv.FormatInt(b.offset,10)},"timeout":{"30"},"allowed_updates":{"[\"message\",\"callback_query\"]"}},&updates)
 		if err!=nil { if ctx.Err()!=nil{return nil};b.log.Warn("getUpdates failed","error",err);select{case <-ctx.Done():return nil;case <-time.After(2*time.Second):};continue }
-		for _,u:=range updates { if u.UpdateID>=b.offset{b.offset=u.UpdateID+1};if u.Message!=nil{b.handleMessage(ctx,u.Message)} }
+		for _,u:=range updates {
+			if u.UpdateID>=b.offset { b.offset=u.UpdateID+1 }
+			if u.Callback!=nil { b.handleCallback(ctx,u.Callback) }
+			if u.Message!=nil { b.handleMessage(ctx,u.Message) }
+		}
 	}
 }
 
 func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	text:=strings.TrimSpace(msg.Text);if msg.Chat.ID==0{return};if b.captureForwardedDestination(ctx,msg) { return };if text=="" { return }
+	if msg.Chat.Type=="private" && !strings.HasPrefix(text,"/") && b.handlePendingInput(ctx,msg,text) { return }
 	fields:=strings.Fields(text);command:=strings.ToLower(fields[0]);if i:=strings.IndexByte(command,'@');i>=0{command=command[:i]}
 	var reply string
 	if (command=="/code"||command=="/password")&&msg.Chat.Type!="private"{_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);_=b.sendMessage(ctx,msg.Chat.ID,"For account security, send login codes and 2FA passwords only in a private chat with this bot.");return}
 	switch command {
-	case "/start":
-		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer selected posts\n/copy CHAT_LINK [LIMIT] — copy accessible chat history (default: 100, max: 50000)\n/cancel — cancel your active transfer\n/setstorage — configure destination by forwarding a message\n/storage — your destination status\n/logout — disconnect\n/info — account status"
+	case "/start", "/menu":
+		b.sendMenu(ctx,msg.Chat.ID,"Welcome to TheOGBot. Choose what you want to do:")
+		return
 	case "/help":
-		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer only the linked posts, in supplied order\n/copy CHAT_LINK [LIMIT] — copy accessible history, default 100, max 50000\n/cancel — cancel your active transfer\n/setstorage — configure destination by forwarding a message\n/storage — destination status\n/logout — disconnect\n/info — account status\n\nUse chats your account can access. Telegram restrictions and flood waits are respected."
+		b.sendMenu(ctx,msg.Chat.ID,"Use the buttons for setup and transfers. You can still use commands if you prefer.")
+		return
 	case "/login":
-		if len(fields)<2{reply="Usage: /login +COUNTRYCODEPHONE\nThen /code YOUR_CODE and, if prompted, /password YOUR_2FA_PASSWORD"}else if b.accounts==nil{reply="MTProto unavailable. Configure API_ID and API_HASH."}else if b.accounts.Connected(msg.From.ID){reply="An account session is already active. Use /logout first."}else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil{reply="Could not start login: "+err.Error()}else{reply="Login started. Submit the Telegram code here using /code YOUR_CODE."}
+		if msg.Chat.Type!="private" { reply="For security, start account login in a private chat with this bot." } else if b.accounts==nil { reply="MTProto unavailable. Configure API_ID and API_HASH." } else if len(fields)<2 {
+			b.setPendingInput(msg.From.ID,"phone")
+			b.sendForceReply(ctx,msg.Chat.ID,"🔐 Connect Telegram account\nSend your phone number with country code, for example +911234567890.","Phone number")
+			return
+		} else if b.accounts.Connected(msg.From.ID) { reply="An account session is already active. Use Logout first." } else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil { reply="Could not start login: "+err.Error() } else { reply="Login started. Waiting for Telegram's code prompt…" }
 	case "/code":
 		_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
 		if len(fields)!=2{reply="Usage: /code YOUR_TELEGRAM_CODE"}else if err:=b.accounts.SubmitCode(msg.From.ID,fields[1]);err!=nil{reply="Could not submit code: "+err.Error()}else{reply="Code submitted. If Telegram requests 2-step verification, send /password YOUR_PASSWORD."}
@@ -180,7 +205,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(msg.From.ID)}
-		reply=fmt.Sprintf("TheOGBot\nBackend: Go\nMTProto: %s\nSession storage: memory only\nTransfer: MTProto download → upload",status)
+		reply=fmt.Sprintf("🤖 TheOGBot\n\n⚙️ Backend: Go\n🔐 Account: %s\n📦 Destination: %s\n💾 Sessions: memory only",status,b.destinationStatus(msg.From.ID))
 	default: reply="Unknown command. Send /help."
 	}
 	if err:=b.sendMessage(ctx,msg.Chat.ID,reply);err!=nil{b.log.Error("send message failed","chat_id",msg.Chat.ID,"error",err)}
@@ -446,6 +471,111 @@ func (b *Bot) captureForwardedDestination(ctx context.Context, msg *incomingMess
 
 func (b *Bot) deleteMessage(ctx context.Context,chatID,messageID int64)error{return b.call(ctx,"deleteMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(messageID,10)}},nil)}
 func (b *Bot) sendMessage(ctx context.Context,chatID int64,text string)error{return b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{text}},nil)}
+func (b *Bot) sendMessageMarkup(ctx context.Context,chatID int64,text string,markup any) error {
+	raw,err:=json.Marshal(markup);if err!=nil{return err}
+	return b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{text},"reply_markup":{string(raw)}},nil)
+}
+func (b *Bot) sendForceReply(ctx context.Context,chatID int64,text,placeholder string) {
+	markup:=map[string]any{"force_reply":true,"selective":true,"input_field_placeholder":placeholder}
+	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("force-reply prompt failed","chat_id",chatID,"error",err)}
+}
+func (b *Bot) sendMenu(ctx context.Context,chatID int64,text string) {
+	markup:=map[string]any{"inline_keyboard":[][]map[string]string{
+		{{"text":"🔐 Connect account","callback_data":"login:start"},{"text":"📦 Set storage","callback_data":"storage:set"}},
+		{{"text":"📥 Batch transfer","callback_data":"transfer:batch"},{"text":"🗂 Copy history","callback_data":"transfer:copy"}},
+		{{"text":"📊 Account status","callback_data":"account:status"},{"text":"❔ Help","callback_data":"help"}},
+		{{"text":"⛔ Cancel transfer","callback_data":"job:cancel"},{"text":"🚪 Logout","callback_data":"account:logout"}},
+	}}
+	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("menu send failed","chat_id",chatID,"error",err)}
+}
+func (b *Bot) setPendingInput(userID int64,kind string){b.destMu.Lock();b.pendingInput[userID]=kind;b.destMu.Unlock()}
+func (b *Bot) takePendingInput(userID int64)string{b.destMu.Lock();defer b.destMu.Unlock();kind:=b.pendingInput[userID];delete(b.pendingInput,userID);return kind}
+func (b *Bot) destinationStatus(userID int64)string{if d,ok:=b.getDestination(userID);ok{return d.Title};return "not configured"}
+func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value string)bool{
+	kind:=b.takePendingInput(msg.From.ID)
+	if kind!="" {
+		_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
+		switch kind {
+		case "phone":
+			if b.accounts==nil{_ = b.sendMessage(ctx,msg.Chat.ID,"MTProto login is unavailable.");return true}
+			if err:=b.accounts.Begin(ctx,msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not start login: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"🔐 Login started. Waiting for Telegram to send the verification prompt…")}
+		case "batch":
+			links:=strings.Fields(value);if len(links)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send one or more Telegram post links.");return true}
+			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,links)}()}
+		case "copy":
+			fields:=strings.Fields(value);if len(fields)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send a Telegram chat link, optionally followed by a limit.");return true}
+			limit:=100;if len(fields)>1{n,err:=strconv.Atoi(fields[1]);if err!=nil||n<1||n>50000{_ = b.sendMessage(ctx,msg.Chat.ID,"Limit must be between 1 and 50000.");return true};limit=n}
+			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],limit)}()}
+		}
+		return true
+	}
+	if b.accounts!=nil {
+		switch b.accounts.Status(msg.From.ID) {
+		case "awaiting_code":
+			_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
+			if err:=b.accounts.SubmitCode(msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not submit verification code: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"⌛ Verification code received securely. Checking with Telegram…")}
+			return true
+		case "awaiting_password":
+			_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
+			if err:=b.accounts.SubmitPassword(msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not submit 2-step password: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"🔒 2-step password received securely. Checking with Telegram…")}
+			return true
+		}
+	}
+	return false
+}
+func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
+	if q==nil{return}
+	_ = b.call(ctx,"answerCallbackQuery",url.Values{"callback_query_id":{q.ID}},nil)
+	if q.Message==nil{return}
+	chatID,userID:=q.Message.Chat.ID,q.From.ID
+	if q.Message.Chat.Type!="private" && strings.HasPrefix(q.Data,"login:"){_ = b.sendMessage(ctx,chatID,"Account login is only available in a private chat.");return}
+	switch q.Data {
+	case "login:start":
+		b.setPendingInput(userID,"phone")
+		b.sendForceReply(ctx,chatID,"🔐 Connect your Telegram account\nSend your phone number including country code, for example +911234567890.","Phone number")
+	case "login:cancel":
+		if b.accounts!=nil{b.accounts.Logout(userID)}
+		_ = b.sendMessage(ctx,chatID,"Login cancelled. You can start again whenever you're ready.")
+	case "storage:set":
+		b.destMu.Lock();b.awaitingDestination[userID]=true;b.destMu.Unlock()
+		_ = b.sendMessage(ctx,chatID,"📦 Forward any message from your destination group/channel here. The configured uploader bot must already have posting permission.")
+	case "transfer:batch":
+		b.setPendingInput(userID,"batch")
+		b.sendForceReply(ctx,chatID,"📥 Send one or more Telegram post links, separated by spaces or new lines.","Telegram post links")
+	case "transfer:copy":
+		b.setPendingInput(userID,"copy")
+		b.sendForceReply(ctx,chatID,"🗂 Send a Telegram chat link and optionally a message limit (default 100).","Chat link [limit]")
+	case "job:cancel":
+		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"⛔ Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
+	case "account:logout":
+		if b.accounts!=nil&&b.accounts.Logout(userID){_ = b.sendMessage(ctx,chatID,"🚪 Your in-memory Telegram session has been disconnected.")}else{_ = b.sendMessage(ctx,chatID,"No active account session.")}
+	case "account:status":
+		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(userID)}
+		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("📊 Account: %s\n📦 Destination: %s\n💾 Session storage: memory only",status,b.destinationStatus(userID)))
+	case "help":
+		_ = b.sendMessage(ctx,chatID,"Use Connect account to log in step by step. Telegram code and 2-step password are entered as direct replies and deleted after submission. Use Batch transfer or Copy history to start transfers without typing commands.")
+	}
+}
+func (b *Bot) onAccountEvent(userID int64,state string,err error){
+	ctx,cancel:=context.WithTimeout(context.Background(),12*time.Second);defer cancel()
+	switch state {
+	case "awaiting_code":
+		_ = b.sendMessage(ctx,userID,"📩 Telegram verification code requested. Reply to the next prompt with the code. Do not share it with anyone.")
+		b.sendForceReply(ctx,userID,"🔢 Enter the Telegram login code sent to your Telegram account.","Telegram login code")
+		b.sendMessageMarkup(ctx,userID,"",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"✖ Cancel login","callback_data":"login:cancel"}}}})
+	case "awaiting_password":
+		_ = b.sendMessage(ctx,userID,"🔐 Two-step verification is enabled on this account.")
+		b.sendForceReply(ctx,userID,"🔒 Enter your Telegram 2-step verification password.","2-step password")
+		b.sendMessageMarkup(ctx,userID,"",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"✖ Cancel login","callback_data":"login:cancel"}}}})
+	case "connected":
+		b.sendMenu(ctx,userID,"✅ Telegram account connected successfully. What would you like to do next?")
+	case "failed":
+		message:="Telegram login failed. Start again using Connect account."
+		if err!=nil{lower:=strings.ToLower(err.Error());switch{case strings.Contains(lower,"phone_code_expired"):message="⌛ That verification code expired. Start again to request a fresh code.";case strings.Contains(lower,"phone_code_invalid"):message="❌ Telegram rejected that code. Start a fresh login and enter the newest code.";case strings.Contains(lower,"password_hash_invalid"):message="❌ Incorrect 2-step verification password. Start login again and retry.";default:message="❌ Login failed: "+err.Error()}}
+		b.sendMenu(ctx,userID,message)
+	}
+}
+
 func (b *Bot) call(ctx context.Context,method string,values url.Values,out any)error{
 	if values==nil{values=url.Values{}}
 	req,err:=http.NewRequestWithContext(ctx,http.MethodPost,telegramAPI+"/bot"+b.token+"/"+method,strings.NewReader(values.Encode()));if err!=nil{return err}
