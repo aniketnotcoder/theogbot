@@ -86,9 +86,9 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	if (command=="/code"||command=="/password")&&msg.Chat.Type!="private"{_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);_=b.sendMessage(ctx,msg.Chat.ID,"For account security, send login codes and 2FA passwords only in a private chat with this bot.");return}
 	switch command {
 	case "/start":
-		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected posts\n/copy CHAT_LINK [LIMIT] — download and upload accessible chat history\n/logout — disconnect\n/info — account status\\n/storage — storage uploader status"
+		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer selected posts\n/copy CHAT_LINK [LIMIT] — copy accessible chat history (default: up to 50000)\n/cancel — cancel your active transfer\n/storage — storage uploader status\n/logout — disconnect\n/info — account status"
 	case "/help":
-		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected media\n/copy CHAT_LINK [LIMIT] — download and upload history, default 50000, max 50000\n/logout — disconnect\n/info — account status\n\nUse only chats your account can access. Telegram restrictions and flood waits are respected."
+		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer only the linked posts, in supplied order\n/copy CHAT_LINK [LIMIT] — copy accessible history, default 50000, max 50000\n/cancel — cancel your active transfer\n/storage — check uploader connection\n/logout — disconnect\n/info — account status\n\nUse chats your account can access. Telegram restrictions and flood waits are respected."
 	case "/login":
 		if len(fields)<2{reply="Usage: /login +COUNTRYCODEPHONE\nThen /code YOUR_CODE and, if prompted, /password YOUR_2FA_PASSWORD"}else if b.accounts==nil{reply="MTProto unavailable. Configure API_ID and API_HASH."}else if b.accounts.Connected(msg.From.ID){reply="An account session is already active. Use /logout first."}else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil{reply="Could not start login: "+err.Error()}else{reply="Login started. Submit the Telegram code here using /code YOUR_CODE."}
 	case "/code":
@@ -104,7 +104,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	case "/cancel":
 		if b.cancelJob(msg.From.ID){reply="Cancellation requested. The current operation will stop safely."}else{reply="No active transfer to cancel."}
 	case "/storage":
-		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else { reply = "Storage uploader: connected\\nDestination: configured\\nUpload mode: download → upload" }
+		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else { reply = "Storage uploader: connected\nDestination: configured\nUpload mode: download → upload" }
 	case "/logout":
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
