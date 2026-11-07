@@ -536,6 +536,8 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	case "login:cancel":
 		if b.accounts!=nil{b.accounts.Logout(userID)}
 		_ = b.sendMessage(ctx,chatID,"Login cancelled. You can start again whenever you're ready.")
+	case "login:retry":
+		if b.accounts==nil { _ = b.sendMessage(ctx,chatID,"MTProto login is unavailable.") } else if err:=b.accounts.Retry(ctx,userID);err!=nil { _ = b.sendMessage(ctx,chatID,"Could not restart login: "+err.Error()) } else { _ = b.sendMessage(ctx,chatID,"🔐 A fresh login attempt has started. Wait for the new Telegram code prompt.") }
 	case "storage:set":
 		b.destMu.Lock();b.awaitingDestination[userID]=true;b.destMu.Unlock()
 		_ = b.sendMessage(ctx,chatID,"📦 Forward any message from your destination group/channel here. The configured uploader bot must already have posting permission.")
@@ -572,7 +574,10 @@ func (b *Bot) onAccountEvent(userID int64,state string,err error){
 	case "failed":
 		message:="Telegram login failed. Start again using Connect account."
 		if err!=nil{lower:=strings.ToLower(err.Error());switch{case strings.Contains(lower,"phone_code_expired"):message="⌛ That verification code expired. Start again to request a fresh code.";case strings.Contains(lower,"phone_code_invalid"):message="❌ Telegram rejected that code. Start a fresh login and enter the newest code.";case strings.Contains(lower,"password_hash_invalid"):message="❌ Incorrect 2-step verification password. Start login again and retry.";default:message="❌ Login failed: "+err.Error()}}
-		b.sendMenu(ctx,userID,message)
+		b.sendMessageMarkup(ctx,userID,message,map[string]any{"inline_keyboard":[][]map[string]string{
+			{{"text":"🔄 Retry with same number","callback_data":"login:retry"}},
+			{{"text":"📱 Use another number","callback_data":"login:start"}},
+		}})
 	}
 }
 

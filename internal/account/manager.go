@@ -17,6 +17,7 @@ var (
 	ErrAlreadyLoggedIn = errors.New("an account session or login is already active")
 	ErrNoPendingLogin = errors.New("no login is waiting for a code or password")
 	ErrUnexpectedLoginInput = errors.New("Telegram is not currently waiting for this response")
+	ErrLoginNotFailed = errors.New("the previous login attempt has not failed")
 )
 
 type prompt struct{ value string }
@@ -27,6 +28,7 @@ type account struct {
 	state string
 	lastError string
 	client *telegram.Client
+	phone string
 }
 type Notifier func(userID int64, state string, err error)
 type Manager struct {
@@ -64,7 +66,7 @@ func (m *Manager) Begin(ctx context.Context,userID int64,phone string) error {
 		previous.cancel()
 	}
 	runCtx,cancel:=context.WithCancel(ctx)
-	a:=&account{cancel:cancel,code:make(chan prompt,1),pass:make(chan prompt,1),state:"starting"}
+	a:=&account{cancel:cancel,code:make(chan prompt,1),pass:make(chan prompt,1),state:"starting",phone:phone}
 	m.users[userID]=a
 	m.mu.Unlock()
 	client:=telegram.NewClient(m.appID,m.appHash,telegram.Options{SessionStorage:&session.StorageMemory{}})
@@ -82,6 +84,15 @@ func (m *Manager) Begin(ctx context.Context,userID int64,phone string) error {
 		if err!=nil&&runCtx.Err()==nil { m.emit(userID,a,"failed",err) }
 	}()
 	return nil
+}
+func (m *Manager) Retry(ctx context.Context,userID int64)error{
+	m.mu.Lock()
+	a:=m.users[userID]
+	if a==nil { m.mu.Unlock();return ErrNoPendingLogin }
+	if a.state!="failed" { m.mu.Unlock();return ErrLoginNotFailed }
+	phone:=a.phone
+	m.mu.Unlock()
+	return m.Begin(ctx,userID,phone)
 }
 func (m *Manager) SubmitCode(userID int64,code string)error{return m.submit(userID,true,strings.TrimSpace(code))}
 func (m *Manager) SubmitPassword(userID int64,password string)error{return m.submit(userID,false,password)}
