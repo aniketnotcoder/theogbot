@@ -39,6 +39,8 @@ type Bot struct {
 	destinations map[int64]destination
 	awaitingDestination map[int64]bool
 	pendingInput map[int64]string
+	otpMu sync.Mutex
+	otpInputs map[int64]*otpInput
 }
 
 type update struct {
@@ -68,6 +70,7 @@ type incomingMessage struct {
 	ForwardOrigin *forwardOrigin `json:"forward_origin"`
 }
 type destination struct { ChatID int64; Title string; Username string }
+type otpInput struct { ChatID int64; MessageID int64; Code string }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"` }
 
@@ -199,7 +202,7 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 	app:=&Bot{token: token, client: &http.Client{
 		Timeout: 45*time.Second,
 		Transport: &http.Transport{Proxy:http.ProxyFromEnvironment,MaxIdleConns:100,MaxIdleConnsPerHost:20,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:10*time.Second,ResponseHeaderTimeout:40*time.Second,DialContext:(&net.Dialer{Timeout:10*time.Second,KeepAlive:30*time.Second}).DialContext},
-	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool),pendingInput:make(map[int64]string)}
+	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool),pendingInput:make(map[int64]string),otpInputs:make(map[int64]*otpInput)}
 	if accounts!=nil { accounts.SetNotifier(app.onAccountEvent) }
 	return app
 }
@@ -540,6 +543,71 @@ func (b *Bot) sendMessageMarkup(ctx context.Context,chatID int64,text string,mar
 	raw,err:=json.Marshal(markup);if err!=nil{return err}
 	return b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{text},"reply_markup":{string(raw)}},nil)
 }
+func otpKeyboard() map[string]any {
+	return map[string]any{"inline_keyboard":[][]map[string]string{
+		{{"text":"1","callback_data":"otp:d:1"},{"text":"2","callback_data":"otp:d:2"},{"text":"3","callback_data":"otp:d:3"}},
+		{{"text":"4","callback_data":"otp:d:4"},{"text":"5","callback_data":"otp:d:5"},{"text":"6","callback_data":"otp:d:6"}},
+		{{"text":"7","callback_data":"otp:d:7"},{"text":"8","callback_data":"otp:d:8"},{"text":"9","callback_data":"otp:d:9"}},
+		{{"text":"⌫","callback_data":"otp:back"},{"text":"0","callback_data":"otp:d:0"},{"text":"Clear","callback_data":"otp:clear"}},
+		{{"text":"Submit code","callback_data":"otp:submit"},{"text":"Cancel","callback_data":"otp:cancel"}},
+	}}
+}
+func otpDisplay(code string) string {
+	var out strings.Builder
+	for i:=0;i<5;i++ { if i>0 { out.WriteString("  ") };if i<len(code){out.WriteByte(code[i])}else{out.WriteString("·")} }
+	return out.String()
+}
+func otpPrompt(code string) string {
+	return "TELEGRAM VERIFICATION\n\nEnter the 5-digit login code\n\n"+otpDisplay(code)+"\n\nUse the keypad below."
+}
+func (b *Bot) sendOTPKeypad(ctx context.Context,chatID,userID int64) {
+	var sent sentMessage
+	err:=b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{otpPrompt("")},"reply_markup":{mustJSON(otpKeyboard())}},&sent)
+	if err!=nil { b.log.Warn("OTP keypad send failed","chat_id",chatID,"error",err);return }
+	b.otpMu.Lock();b.otpInputs[userID]=&otpInput{ChatID:chatID,MessageID:sent.MessageID};b.otpMu.Unlock()
+}
+func (b *Bot) editOTPKeypad(ctx context.Context,input *otpInput) error {
+	return b.call(ctx,"editMessageText",url.Values{"chat_id":{strconv.FormatInt(input.ChatID,10)},"message_id":{strconv.FormatInt(input.MessageID,10)},"text":{otpPrompt(input.Code)},"reply_markup":{mustJSON(otpKeyboard())}},nil)
+}
+func (b *Bot) handleOTPCallback(ctx context.Context,q *callbackQuery,chatID,userID int64) bool {
+	if !strings.HasPrefix(q.Data,"otp:"){return false}
+	b.otpMu.Lock()
+	input:=b.otpInputs[userID]
+	if input==nil||input.ChatID!=chatID||input.MessageID!=q.Message.MessageID { b.otpMu.Unlock();return true }
+	switch {
+	case strings.HasPrefix(q.Data,"otp:d:"):
+		digit:=strings.TrimPrefix(q.Data,"otp:d:")
+		if len(digit)!=1||digit[0]<'0'||digit[0]>'9'||len(input.Code)>=5 { b.otpMu.Unlock();return true }
+		input.Code+=digit
+	case q.Data=="otp:back":
+		if len(input.Code)>0 { input.Code=input.Code[:len(input.Code)-1] }
+	case q.Data=="otp:clear":
+		input.Code=""
+	case q.Data=="otp:cancel":
+		delete(b.otpInputs,userID);b.otpMu.Unlock()
+		if b.accounts!=nil { b.accounts.Logout(userID) }
+		_ = b.call(ctx,"editMessageText",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},"text":{"Login cancelled."}},nil)
+		return true
+	case q.Data=="otp:submit":
+		code:=input.Code
+		if len(code)!=5 { b.otpMu.Unlock();_ = b.sendMessage(ctx,chatID,"Enter all 5 digits before submitting.");return true }
+		delete(b.otpInputs,userID);b.otpMu.Unlock()
+		if b.accounts==nil { _ = b.sendMessage(ctx,chatID,"Login is unavailable.");return true }
+		if err:=b.accounts.SubmitCode(userID,code);err!=nil {
+			_ = b.sendMessage(ctx,chatID,"Could not submit the code. Please try again.")
+			return true
+		}
+		_ = b.call(ctx,"editMessageText",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},"text":{"Code submitted. Checking…"}},nil)
+		return true
+	default:
+		b.otpMu.Unlock();return true
+	}
+	snapshot:=*input
+	b.otpMu.Unlock()
+	if err:=b.editOTPKeypad(ctx,&snapshot);err!=nil { b.log.Warn("OTP keypad update failed","chat_id",chatID,"error",err) }
+	return true
+}
+
 func (b *Bot) sendForceReply(ctx context.Context,chatID int64,text,placeholder string) {
 	markup:=map[string]any{"force_reply":true,"selective":true,"input_field_placeholder":placeholder}
 	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("force-reply prompt failed","chat_id",chatID,"error",err)}
@@ -578,7 +646,7 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 		switch b.accounts.Status(msg.From.ID) {
 		case "awaiting_code":
 			_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
-			if err:=b.accounts.SubmitCode(msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not submit verification code: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"Code received. Checking…")}
+			_ = b.sendMessage(ctx,msg.Chat.ID,"Use the on-screen keypad to enter your 5-digit verification code.")
 			return true
 		case "awaiting_password":
 			_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
@@ -595,11 +663,13 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	chatID,userID:=q.Message.Chat.ID,q.From.ID
 	if chatID!=userID { return }
 	if q.Message.Chat.Type!="private" { _ = b.sendMessage(ctx,chatID,"Open the bot's private chat and send /start to use these controls securely."); return }
+	if b.handleOTPCallback(ctx,q,chatID,userID) { return }
 	switch q.Data {
 	case "login:start":
 		b.setPendingInput(userID,"phone")
 		b.sendForceReply(ctx,chatID,"Connect your Telegram account\nSend your phone number including country code, for example +911234567890.","Phone number")
 	case "login:cancel":
+		b.otpMu.Lock();delete(b.otpInputs,userID);b.otpMu.Unlock()
 		if b.accounts!=nil{b.accounts.Logout(userID)}
 		_ = b.sendMessage(ctx,chatID,"Login cancelled. You can start again whenever you're ready.")
 	case "login:retry":
@@ -630,9 +700,7 @@ func (b *Bot) onAccountEvent(userID int64,state string,err error){
 	ctx,cancel:=context.WithTimeout(context.Background(),12*time.Second);defer cancel()
 	switch state {
 	case "awaiting_code":
-		_ = b.sendMessage(ctx,userID,"Telegram verification code requested. Reply to the next prompt with the code. Do not share it with anyone.")
-		b.sendForceReply(ctx,userID,"Enter the Telegram login code sent to your Telegram account.","Telegram login code")
-		b.sendMessageMarkup(ctx,userID,"Login controls:",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel login","callback_data":"login:cancel"}}}})
+		b.sendOTPKeypad(ctx,userID,userID)
 	case "awaiting_password":
 		_ = b.sendMessage(ctx,userID,"Two-step verification is enabled on this account.")
 		b.sendForceReply(ctx,userID,"Enter your Telegram 2-step verification password.","2-step password")

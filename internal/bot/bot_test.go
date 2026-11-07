@@ -158,3 +158,16 @@ func TestProgressResetsPerFilePhase(t *testing.T) {
 func TestProgressETADoesNotShowZeroForRemainingBytes(t *testing.T) {
 	if got:=progressETA(200*time.Millisecond);got!="<1s"{t.Fatalf("ETA = %q, want <1s",got)}
 }
+
+func TestOTPDisplayAndPrompt(t *testing.T) {
+	if got:=otpDisplay("");got!="·  ·  ·  ·  ·"{t.Fatalf("empty OTP display = %q",got)}
+	if got:=otpDisplay("120");got!="1  2  0  ·  ·"{t.Fatalf("partial OTP display = %q",got)}
+	if got:=otpPrompt("12345");!strings.Contains(got,"TELEGRAM VERIFICATION")||!strings.Contains(got,"1  2  3  4  5"){t.Fatalf("unexpected OTP prompt: %q",got)}
+}
+func TestOTPKeyboardHasTenDigitsAndActions(t *testing.T) {
+	k:=otpKeyboard()["inline_keyboard"].([][]map[string]string)
+	if len(k)!=5 {t.Fatalf("keyboard rows = %d, want 5",len(k))}
+	got:=map[string]bool{}
+	for _,row:=range k {for _,button:=range row {got[button["callback_data"]]=true}}
+	for _,key:=range []string{"otp:d:0","otp:d:1","otp:d:2","otp:d:3","otp:d:4","otp:d:5","otp:d:6","otp:d:7","otp:d:8","otp:d:9","otp:back","otp:clear","otp:submit","otp:cancel"} {if !got[key]{t.Errorf("missing keypad action %s",key)}}
+}
