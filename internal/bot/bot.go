@@ -59,7 +59,7 @@ type destination struct { ChatID int64; Title string; Username string }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"` }
 
-type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; last time.Time }
+type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; mu sync.Mutex; last time.Time; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64 }
 
 func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total int) (*progressReporter, error) {
 	var sent sentMessage
@@ -76,14 +76,22 @@ func formatProgress(label, stage string, current, total, done, failed, skipped i
 	return fmt.Sprintf("%s · %d%%\nStage: %s\nItem: %d/%d\nUploaded: %d · Failed: %d · Skipped: %d\nElapsed: %s · ETA: %s",label,percent,stage,current,total,done,failed,skipped,elapsed.Round(time.Second),eta)
 }
 
+func humanBytes(n int64) string { const unit=1024; if n<unit{return fmt.Sprintf("%d B",n)}; div,exp:=int64(unit),0;for v:=n/unit;v>=unit;v/=unit{div*=unit;exp++};return fmt.Sprintf("%.1f %ciB",float64(n)/float64(div),"KMGTPE"[exp]) }
+func humanSpeed(n float64) string { if n<=0{return "calculating…"};return humanBytes(int64(n))+"/s" }
+func (p *progressReporter) updateBytes(ctx context.Context,stage string,current,total int64,item,done,failed,skipped int){
+	if p==nil{return};now:=time.Now();p.mu.Lock()
+	if !p.sampleAt.IsZero()&&now.After(p.sampleAt)&&current>=p.sampleBytes{seconds:=now.Sub(p.sampleAt).Seconds();if seconds>0{instant:=float64(current-p.sampleBytes)/seconds;if p.speed==0{p.speed=instant}else{p.speed=p.speed*0.65+instant*0.35}}}
+	p.bytesCurrent,p.bytesTotal,p.sampleBytes,p.sampleAt=current,total,current,now;p.mu.Unlock()
+	p.update(ctx,stage,item,done,failed,skipped,false)
+}
 func (p *progressReporter) update(ctx context.Context, stage string, current, done, failed, skipped int, force bool) {
-	if p == nil || p.messageID == 0 { return }
-	now := time.Now()
-	if !force && now.Sub(p.last) < 900*time.Millisecond { return }
-	p.last = now
-	text := formatProgress(p.label,stage,current,p.total,done,failed,skipped,now.Sub(p.started))
-	values := url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text}}
-	if err := p.bot.call(ctx,"editMessageText",values,nil); err != nil { p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err) }
+	if p==nil||p.messageID==0{return};now:=time.Now();p.mu.Lock()
+	if !force&&now.Sub(p.last)<900*time.Millisecond{p.mu.Unlock();return};p.last=now
+	bytesCurrent,bytesTotal,speed:=p.bytesCurrent,p.bytesTotal,p.speed;p.mu.Unlock()
+	text:=formatProgress(p.label,stage,current,p.total,done,failed,skipped,now.Sub(p.started))
+	if bytesCurrent>0{if bytesTotal>0{percent:=int(float64(bytesCurrent)*100/float64(bytesTotal));if percent>100{percent=100};text+=fmt.Sprintf("\nBytes: %s / %s (%d%%)",humanBytes(bytesCurrent),humanBytes(bytesTotal),percent)}else{text+="\nBytes: "+humanBytes(bytesCurrent)};text+="\nSpeed: "+humanSpeed(speed);if bytesTotal>bytesCurrent&&speed>0{text+=" · Byte ETA: "+(time.Duration(float64(bytesTotal-bytesCurrent)/speed*float64(time.Second))).Round(time.Second).String()}}
+	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text}}
+	if err:=p.bot.call(ctx,"editMessageText",values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
 }
 type apiResponse[T any] struct {
 	OK bool `json:"ok"`
@@ -225,7 +233,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 			downloads := make([]*media.Downloaded, 0, groupLen)
 			albumReady := true
 			for j := 0; j < groupLen; j++ {
-				item, downloadErr := media.DownloadMessage(ctx, api, elements[i+j], b.tempDir)
+				item, downloadErr := media.DownloadMessageWithProgress(ctx, api, elements[i+j], b.tempDir, func(current,total int64){if progress!=nil{progress.updateBytes(ctx,fmt.Sprintf("Downloading album %d/%d",j+1,groupLen),current,total,i+j+1,done,failed,skipped)}})
 				if downloadErr != nil { albumReady = false; break }
 				if item.Kind != "photo" && item.Kind != "video" { _ = item.Cleanup(); albumReady = false; break }
 				downloads = append(downloads, item)
@@ -236,7 +244,8 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 					items = append(items, storage.AlbumItem{Path:item.Path, Filename:item.Name, MIME:item.MIME, Kind:item.Kind, Caption:item.Caption, Attributes:item.Attributes, Entities:item.Entities})
 				}
 				if progress != nil { progress.update(ctx,"Uploading album",i+1,done,failed,skipped,false) }
-				updates, uploadErr := b.storage.UploadAlbumTo(ctx, destinationPeer, items)
+				if progress != nil { progress.update(ctx,"Uploading album",i+1,done,failed,skipped,true) }
+				updates, uploadErr := b.storage.UploadAlbumToWithProgress(ctx, destinationPeer, items, func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading album",current,total,i+1,done,failed,skipped)}})
 				for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
 				if uploadErr != nil {
 					failed += groupLen
@@ -257,7 +266,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 		elem := elements[i]
 		id := ids[i]
 		if progress != nil { progress.update(ctx,"Downloading",i+1,done,failed,skipped,false) }
-		downloaded, downloadErr := media.DownloadMessage(ctx, api, elem, b.tempDir)
+		downloaded, downloadErr := media.DownloadMessageWithProgress(ctx, api, elem, b.tempDir, func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Downloading",current,total,i+1,done,failed,skipped)}})
 		if downloadErr != nil {
 			if msg, ok := elem.Msg.(*tg.Message); ok && strings.TrimSpace(msg.Message) != "" && msg.Media == nil {
 				if updates, textErr := b.storage.SendTextTo(ctx, destinationPeer, msg.Message); textErr != nil {
@@ -272,7 +281,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 			continue
 		}
 		if progress != nil { progress.update(ctx,"Uploading",i+1,done,failed,skipped,false) }
-		updates, uploadErr := b.storage.UploadPathTo(ctx, destinationPeer, downloaded.Path, downloaded.Name, downloaded.MIME, downloaded.Caption, downloaded.Kind, downloaded.Attributes, downloaded.Entities)
+		updates, uploadErr := b.storage.UploadPathToWithProgress(ctx, destinationPeer, downloaded.Path, downloaded.Name, downloaded.MIME, downloaded.Caption, downloaded.Kind, downloaded.Attributes, downloaded.Entities, func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading",current,total,i+1,done,failed,skipped)}})
 		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
 			failed++

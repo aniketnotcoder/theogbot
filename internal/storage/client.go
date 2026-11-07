@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,27 @@ import (
 	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 )
+
+type TransferProgress func(current, total int64)
+
+type uploadProgress struct { mu sync.Mutex; uploaded map[int64]int64; total int64; callback TransferProgress }
+func (p *uploadProgress) Chunk(_ context.Context, state uploader.ProgressState) error {
+	p.mu.Lock(); if p.uploaded == nil { p.uploaded = make(map[int64]int64) }; p.uploaded[state.ID] = state.Uploaded
+	var current int64; for _, n := range p.uploaded { current += n }; total := p.total; cb := p.callback; p.mu.Unlock()
+	if cb != nil { cb(current,total) }; return nil
+}
+
+func retryFloodWait(ctx context.Context, operation func() (tg.UpdatesClass,error)) (tg.UpdatesClass,error) {
+	const maxAttempts = 6
+	for attempt:=0; attempt<maxAttempts; attempt++ {
+		result, err := operation(); if err == nil { return result,nil }
+		flood, waitErr := tgerr.FloodWait(ctx,err)
+		if waitErr != nil { return nil,waitErr }; if !flood { return nil,err }
+	}
+	return nil, fmt.Errorf("Telegram FloodWait persisted after %d safe retries",maxAttempts)
+}
 
 type Client struct {
 	appID int
@@ -87,24 +108,23 @@ func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption, 
 }
 
 func (c *Client) UploadPathTo(ctx context.Context, destination tg.InputPeerClass, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass, entities []tg.MessageEntityClass) (tg.UpdatesClass, error) {
-	if err := c.Ready(ctx); err != nil { return nil, err }
-	c.mu.RLock()
-	s, u, configuredPeer := c.sender, c.uploader, c.targetPeer
-	peer := destination
-	if peer == nil { peer = configuredPeer }
-	c.mu.RUnlock()
-	file, err := u.FromPath(ctx, path)
-	if err != nil { return nil, fmt.Errorf("upload file: %w", err) }
-	captionOption := captionOptions(caption, entities)
-	if kind == "photo" {
-		if peer != nil { return s.To(peer).UploadedPhoto(ctx, file, captionOption...) }
-		return s.Resolve(c.target).UploadedPhoto(ctx, file, captionOption...)
-	}
-	preserved := make([]tg.DocumentAttributeClass, 0, len(attrs))
-	for _, attr := range attrs { if _, isFilename := attr.(*tg.DocumentAttributeFilename); !isFilename { preserved = append(preserved, attr) } }
-	doc := message.UploadedDocument(file, captionOption...).Filename(filename).MIME(mime).Attributes(preserved...)
-	if peer != nil { return s.To(peer).Media(ctx, doc) }
-	return s.Resolve(c.target).Media(ctx, doc)
+	return c.UploadPathToWithProgress(ctx,destination,path,filename,mime,caption,kind,attrs,entities,nil)
+}
+
+func (c *Client) UploadPathToWithProgress(ctx context.Context, destination tg.InputPeerClass, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass, entities []tg.MessageEntityClass, progress TransferProgress) (tg.UpdatesClass,error) {
+	if err:=c.Ready(ctx);err!=nil{return nil,err}
+	c.mu.RLock(); api,configuredPeer:=c.api,c.targetPeer; peer:=destination; if peer==nil{peer=configuredPeer}; target:=c.target; c.mu.RUnlock()
+	info,err:=os.Stat(path);if err!=nil{return nil,fmt.Errorf("stat upload file: %w",err)}
+	return retryFloodWait(ctx,func()(tg.UpdatesClass,error){
+		u:=uploader.NewUploader(api).WithThreads(4).WithProgress(&uploadProgress{total:info.Size(),callback:progress})
+		s:=message.NewSender(api).WithUploader(u)
+		file,err:=u.FromPath(ctx,path);if err!=nil{return nil,fmt.Errorf("upload file: %w",err)}
+		captionOption:=captionOptions(caption,entities)
+		if kind=="photo"{if peer!=nil{return s.To(peer).UploadedPhoto(ctx,file,captionOption...)};return s.Resolve(target).UploadedPhoto(ctx,file,captionOption...)}
+		preserved:=make([]tg.DocumentAttributeClass,0,len(attrs));for _,attr:=range attrs{if _,isFilename:=attr.(*tg.DocumentAttributeFilename);!isFilename{preserved=append(preserved,attr)}}
+		doc:=message.UploadedDocument(file,captionOption...).Filename(filename).MIME(mime).Attributes(preserved...)
+		if peer!=nil{return s.To(peer).Media(ctx,doc)};return s.Resolve(target).Media(ctx,doc)
+	})
 }
 
 type AlbumItem struct {
@@ -115,34 +135,27 @@ type AlbumItem struct {
 
 // UploadAlbumTo uploads a Telegram media group (2-10 photos/videos) and sends it
 // as one grouped message. Other document types must use UploadPathTo individually.
-func (c *Client) UploadAlbumTo(ctx context.Context, destination tg.InputPeerClass, items []AlbumItem) (tg.UpdatesClass, error) {
-	if len(items) < 2 || len(items) > 10 { return nil, fmt.Errorf("album must contain between 2 and 10 items") }
-	if err := c.Ready(ctx); err != nil { return nil, err }
-	c.mu.RLock()
-	s, u, configuredPeer := c.sender, c.uploader, c.targetPeer
-	peer := destination
-	if peer == nil { peer = configuredPeer }
-	c.mu.RUnlock()
-	if peer == nil && strings.TrimSpace(c.target) == "" { return nil, errors.New("album destination is required") }
-	options := make([]message.MultiMediaOption, 0, len(items))
-	for i, item := range items {
-		if item.Kind != "photo" && item.Kind != "video" { return nil, fmt.Errorf("album item %d has unsupported kind %q; only photos and videos can be grouped", i+1, item.Kind) }
-		file, err := u.FromPath(ctx, item.Path)
-		if err != nil { return nil, fmt.Errorf("upload album item %d: %w", i+1, err) }
-		caption := []styling.StyledTextOption{}
-		caption = captionOptions(item.Caption, item.Entities)
-		var option message.MediaOption
-		if item.Kind == "photo" {
-			option = message.UploadedPhoto(file, caption...)
-		} else {
-			preserved := make([]tg.DocumentAttributeClass, 0, len(item.Attributes))
-			for _, attr := range item.Attributes { if _, isFilename := attr.(*tg.DocumentAttributeFilename); !isFilename { preserved = append(preserved, attr) } }
-			option = message.UploadedDocument(file, caption...).Filename(item.Filename).MIME(item.MIME).Attributes(preserved...)
+func (c *Client) UploadAlbumTo(ctx context.Context,destination tg.InputPeerClass,items []AlbumItem)(tg.UpdatesClass,error){
+	return c.UploadAlbumToWithProgress(ctx,destination,items,nil)
+}
+func (c *Client) UploadAlbumToWithProgress(ctx context.Context,destination tg.InputPeerClass,items []AlbumItem,progress TransferProgress)(tg.UpdatesClass,error){
+	if len(items)<2||len(items)>10{return nil,fmt.Errorf("album must contain between 2 and 10 items")}
+	if err:=c.Ready(ctx);err!=nil{return nil,err}
+	c.mu.RLock();api,configuredPeer,target:=c.api,c.targetPeer,c.target;c.mu.RUnlock();peer:=destination;if peer==nil{peer=configuredPeer}
+	if peer==nil&&strings.TrimSpace(target)==""{return nil,errors.New("album destination is required")}
+	var total int64;for i,item:=range items{if item.Kind!="photo"&&item.Kind!="video"{return nil,fmt.Errorf("album item %d has unsupported kind %q; only photos and videos can be grouped",i+1,item.Kind)};info,err:=os.Stat(item.Path);if err!=nil{return nil,fmt.Errorf("stat album item %d: %w",i+1,err)};total+=info.Size()}
+	return retryFloodWait(ctx,func()(tg.UpdatesClass,error){
+		u:=uploader.NewUploader(api).WithThreads(4).WithProgress(&uploadProgress{total:total,callback:progress});s:=message.NewSender(api).WithUploader(u)
+		options:=make([]message.MultiMediaOption,0,len(items))
+		for i,item:=range items{
+			file,err:=u.FromPath(ctx,item.Path);if err!=nil{return nil,fmt.Errorf("upload album item %d: %w",i+1,err)}
+			caption:=captionOptions(item.Caption,item.Entities);var option message.MediaOption
+			if item.Kind=="photo"{option=message.UploadedPhoto(file,caption...)}else{preserved:=make([]tg.DocumentAttributeClass,0,len(item.Attributes));for _,attr:=range item.Attributes{if _,isFilename:=attr.(*tg.DocumentAttributeFilename);!isFilename{preserved=append(preserved,attr)}};option=message.UploadedDocument(file,caption...).Filename(item.Filename).MIME(item.MIME).Attributes(preserved...)}
+			options=append(options,message.ForceMulti(option))
 		}
-		options = append(options, message.ForceMulti(option))
-	}
-	builder := s.To(peer)
-	return builder.Album(ctx, options[0], options[1:]...)
+		builder:=s.To(peer);if peer==nil{builder=s.Resolve(target)}
+		return builder.Album(ctx,options[0],options[1:]...)
+	})
 }
 
 func (c *Client) SendText(ctx context.Context, text string) (tg.UpdatesClass, error) {
@@ -157,9 +170,7 @@ func (c *Client) SendTextTo(ctx context.Context, destination tg.InputPeerClass, 
 	peer := destination
 	if peer == nil { peer = configuredPeer }
 	c.mu.RUnlock()
-	if peer != nil { return s.To(peer).Text(ctx, text) }
-	if strings.TrimSpace(c.target) == "" { return nil, errors.New("text destination is required") }
-	return s.Resolve(c.target).Text(ctx, text)
+	return retryFloodWait(ctx,func()(tg.UpdatesClass,error){ if peer != nil { return s.To(peer).Text(ctx,text) }; if strings.TrimSpace(c.target)=="" { return nil,errors.New("text destination is required") }; return s.Resolve(c.target).Text(ctx,text) })
 }
 
 func (c *Client) ResolvePeer(ctx context.Context, target string) (tg.InputPeerClass, error) {

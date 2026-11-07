@@ -1,6 +1,7 @@
 package storage
 
-import ("testing"; "context"; "github.com/gotd/td/tg")
+import ("testing"; "context"; "github.com/gotd/td/tg"
+	"github.com/gotd/td/telegram/uploader")
 
 func TestNewAllowsPerUserDestinationConfiguration(t *testing.T) {
 	client, err := New(12345, "api-hash", "bot-token", "")
@@ -37,4 +38,14 @@ func TestCaptionOptionsKeepsPlainCaptionAndFormatting(t *testing.T) {
 	if len(plain) != 1 || plain[0].Zero() { t.Fatal("expected a plain caption option") }
 	formatted := captionOptions("bold text", []tg.MessageEntityClass{&tg.MessageEntityBold{Offset:0,Length:4}})
 	if len(formatted) != 1 || formatted[0].Zero() { t.Fatal("expected formatted caption option") }
+}
+
+func TestUploadProgressAggregatesConcurrentFileParts(t *testing.T) {
+	var current int64
+	p:=&uploadProgress{total:100,callback:func(n,total int64){current=n;if total!=100{t.Errorf("total=%d, want 100",total)}}}
+	if err:=p.Chunk(context.Background(),uploader.ProgressState{ID:1,Uploaded:30,Total:60});err!=nil{t.Fatal(err)}
+	if err:=p.Chunk(context.Background(),uploader.ProgressState{ID:2,Uploaded:20,Total:40});err!=nil{t.Fatal(err)}
+	if current!=50{t.Fatalf("aggregate uploaded=%d, want 50",current)}
+	if err:=p.Chunk(context.Background(),uploader.ProgressState{ID:1,Uploaded:60,Total:60});err!=nil{t.Fatal(err)}
+	if current!=80{t.Fatalf("aggregate uploaded=%d, want 80",current)}
 }

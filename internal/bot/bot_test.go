@@ -104,3 +104,9 @@ func TestDestinationMessageRefsSupportsShortSentMessage(t *testing.T) {
 	got := destinationMessageRefs(destination{ChatID:-1001234567890},&tg.UpdateShortSentMessage{ID:19})
 	if len(got)!=1 || got[0]!="https://t.me/c/1234567890/19" { t.Fatalf("refs = %v",got) }
 }
+
+func TestHumanBytesAndSpeed(t *testing.T) {
+	if got:=humanBytes(1024);got!="1.0 KiB"{t.Fatalf("humanBytes(1024)=%q",got)}
+	if got:=humanSpeed(0);got!="calculating…"{t.Fatalf("humanSpeed(0)=%q",got)}
+	if got:=humanSpeed(2048);got!="2.0 KiB/s"{t.Fatalf("humanSpeed(2048)=%q",got)}
+}
