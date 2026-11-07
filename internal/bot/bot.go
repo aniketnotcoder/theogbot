@@ -75,17 +75,67 @@ type progressReporter struct { bot *Bot; chatID, messageID int64; label string; 
 
 func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total int) (*progressReporter, error) {
 	var sent sentMessage
-	if err := b.call(ctx, "sendMessage", url.Values{"chat_id":{strconv.FormatInt(chatID,10)}, "text":{fmt.Sprintf("%s: preparing %d messages…", label,total)}}, &sent); err != nil { return nil, err }
+	markup:=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel transfer","callback_data":"job:cancel"}}}}
+	if err := b.call(ctx, "sendMessage", url.Values{
+		"chat_id":{strconv.FormatInt(chatID,10)},
+		"text":{formatProgress(label,"Preparing",0,total,0,0,0,0,0,0,time.Since(time.Now()))},
+		"reply_markup":{mustJSON(markup)},
+	}, &sent); err != nil { return nil, err }
 	return &progressReporter{bot:b,chatID:chatID,messageID:sent.MessageID,label:label,total:total,started:time.Now()},nil
 }
 
-func formatProgress(label, stage string, current, total, done, failed, skipped int, elapsed time.Duration) string {
-	processed := done+failed+skipped
-	percent := 0
-	if total > 0 { percent = processed*100/total }
-	eta := "calculating…"
-	if processed > 0 && total > processed { remaining := time.Duration(float64(elapsed)*float64(total-processed)/float64(processed)); eta = remaining.Round(time.Second).String() } else if processed >= total { eta = "0s" }
-	return fmt.Sprintf("%s · %d%%\nStage: %s\nItem: %d/%d\nUploaded: %d · Failed: %d · Skipped: %d\nElapsed: %s · ETA: %s",label,percent,stage,current,total,done,failed,skipped,elapsed.Round(time.Second),eta)
+func mustJSON(value any) string { raw,_:=json.Marshal(value);return string(raw) }
+
+func progressBar(percent int) string {
+	if percent<0 { percent=0 };if percent>100 { percent=100 }
+	filled:=percent*16/100
+	if percent>0&&filled==0 { filled=1 }
+	return strings.Repeat("━",filled)+strings.Repeat("·",16-filled)
+}
+
+func progressStage(stage string) string {
+	s:=strings.ToLower(stage)
+	switch {
+	case strings.Contains(s,"cancel"): return "Cancelling"
+	case strings.Contains(s,"finish"): return "Finishing"
+	case strings.Contains(s,"upload"): return "Uploading"
+	case strings.Contains(s,"download"): return "Downloading"
+	case strings.Contains(s,"retriev"),strings.Contains(s,"ready"),strings.Contains(s,"prepar"): return "Preparing"
+	default: return "Transferring"
+	}
+}
+
+func formatProgress(label, stage string, current, total, done, failed, skipped int, byteCurrent, byteTotal int64, speed float64, elapsed time.Duration) string {
+	processed:=done+failed+skipped
+	percent:=0
+	if total>0 { percent=processed*100/total }
+	if percent>100 { percent=100 }
+	if byteTotal>0 {
+		bytePercent:=int(float64(byteCurrent)*100/float64(byteTotal))
+		if bytePercent<0 { bytePercent=0 };if bytePercent>100 { bytePercent=100 }
+		percent=bytePercent
+	}
+	title:=strings.ToUpper(strings.TrimSpace(label))
+	if title=="" { title="TRANSFER" }
+	if strings.Contains(strings.ToLower(stage),"finish") && processed>=total {
+		title="TRANSFER COMPLETE"
+		if failed>0||skipped>0 { title="TRANSFER FINISHED" }
+	}
+	if strings.Contains(strings.ToLower(stage),"cancel") { title="TRANSFER CANCELLED" }
+	line:=fmt.Sprintf("%s\n\n%s  ·  %d%%\n%s\n%d of %d items",title,progressStage(stage),percent,progressBar(percent),processed,total)
+	if byteTotal>0 {
+		line+=fmt.Sprintf("\n%s of %s",humanBytes(byteCurrent),humanBytes(byteTotal))
+		if speed>0 { line+="  ·  "+humanSpeed(speed) }
+		if byteCurrent<byteTotal&&speed>0 { line+="\nAbout "+(time.Duration(float64(byteTotal-byteCurrent)/speed*float64(time.Second))).Round(time.Second).String()+" left" }
+	} else if processed>0&&total>processed {
+		remaining:=time.Duration(float64(elapsed)*float64(total-processed)/float64(processed)).Round(time.Second)
+		line+="\nAbout "+remaining.String()+" left"
+	} else if processed>=total&&total>0 {
+		line+="\nCompleted in "+elapsed.Round(time.Second).String()
+	}
+	if failed>0||skipped>0 { line+=fmt.Sprintf("\n\n%d failed  ·  %d skipped",failed,skipped) }
+	if processed>=total&&total>0&&byteTotal>0 { line+="\nCompleted in "+elapsed.Round(time.Second).String() }
+	return line
 }
 
 func humanBytes(n int64) string { const unit=1024; if n<unit{return fmt.Sprintf("%d B",n)}; div,exp:=int64(unit),0;for v:=n/unit;v>=unit;v/=unit{div*=unit;exp++};return fmt.Sprintf("%.1f %ciB",float64(n)/float64(div),"KMGTPE"[exp]) }
@@ -119,9 +169,12 @@ func (p *progressReporter) update(ctx context.Context, stage string, current, do
 	if p==nil||p.messageID==0{return};now:=time.Now();p.mu.Lock()
 	if !force&&now.Sub(p.last)<900*time.Millisecond{p.mu.Unlock();return};p.last=now
 	bytesCurrent,bytesTotal,speed:=p.bytesCurrent,p.bytesTotal,p.speed;p.mu.Unlock()
-	text:=formatProgress(p.label,stage,current,p.total,done,failed,skipped,now.Sub(p.started))
-	if bytesCurrent>0{if bytesTotal>0{percent:=int(float64(bytesCurrent)*100/float64(bytesTotal));if percent>100{percent=100};text+=fmt.Sprintf("\nBytes: %s / %s (%d%%)",humanBytes(bytesCurrent),humanBytes(bytesTotal),percent)}else{text+="\nBytes: "+humanBytes(bytesCurrent)};text+="\nSpeed: "+humanSpeed(speed);if bytesTotal>bytesCurrent&&speed>0{text+=" · Byte ETA: "+(time.Duration(float64(bytesTotal-bytesCurrent)/speed*float64(time.Second))).Round(time.Second).String()}}
-	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text}}
+	text:=formatProgress(p.label,stage,current,p.total,done,failed,skipped,bytesCurrent,bytesTotal,speed,now.Sub(p.started))
+	markup:=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel transfer","callback_data":"job:cancel"}}}}
+	if done+failed+skipped>=p.total || strings.Contains(strings.ToLower(stage),"cancel") || strings.Contains(strings.ToLower(stage),"finish") {
+		markup=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Back to menu","callback_data":"menu:home"},{"text":"New batch","callback_data":"transfer:batch"}}}}
+	}
+	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text},"reply_markup":{mustJSON(markup)}}
 	if err:=p.bot.call(ctx,"editMessageText",values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
 }
 type apiResponse[T any] struct {
@@ -169,7 +222,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	if (command=="/code"||command=="/password")&&msg.Chat.Type!="private"{_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);_=b.sendMessage(ctx,msg.Chat.ID,"For account security, send login codes and 2FA passwords only in a private chat with this bot.");return}
 	switch command {
 	case "/start", "/menu":
-		b.sendMenu(ctx,msg.Chat.ID,"Welcome to TheOGBot. Choose what you want to do:")
+		b.sendMenu(ctx,msg.Chat.ID,"THEOGBOT\n\nYour transfers, in one place.\nChoose an action.")
 		return
 	case "/help":
 		b.sendMenu(ctx,msg.Chat.ID,"Use the buttons for setup and transfers. You can still use commands if you prefer.")
@@ -481,10 +534,10 @@ func (b *Bot) sendForceReply(ctx context.Context,chatID int64,text,placeholder s
 }
 func (b *Bot) sendMenu(ctx context.Context,chatID int64,text string) {
 	markup:=map[string]any{"inline_keyboard":[][]map[string]string{
-		{{"text":"🔐 Connect account","callback_data":"login:start"},{"text":"📦 Set storage","callback_data":"storage:set"}},
-		{{"text":"📥 Batch transfer","callback_data":"transfer:batch"},{"text":"🗂 Copy history","callback_data":"transfer:copy"}},
-		{{"text":"📊 Account status","callback_data":"account:status"},{"text":"❔ Help","callback_data":"help"}},
-		{{"text":"⛔ Cancel transfer","callback_data":"job:cancel"},{"text":"🚪 Logout","callback_data":"account:logout"}},
+		{{"text":"Connect account","callback_data":"login:start"},{"text":"Set destination","callback_data":"storage:set"}},
+		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
+		{{"text":"Account","callback_data":"account:status"},{"text":"Help","callback_data":"help"}},
+		{{"text":"Cancel transfer","callback_data":"job:cancel"},{"text":"Log out","callback_data":"account:logout"}},
 	}}
 	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("menu send failed","chat_id",chatID,"error",err)}
 }
@@ -555,7 +608,9 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(userID)}
 		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("📊 Account: %s\n📦 Destination: %s\n💾 Session storage: memory only",status,b.destinationStatus(userID)))
 	case "help":
-		_ = b.sendMessage(ctx,chatID,"Use Connect account to log in step by step. Telegram code and 2-step password are entered as direct replies and deleted after submission. Use Batch transfer or Copy history to start transfers without typing commands.")
+		_ = b.sendMessage(ctx,chatID,"Choose an action from the menu. During login, reply directly to each secure prompt. During a transfer, use the Cancel transfer button if you need to stop.") 
+	case "menu:home":
+		b.sendMenu(ctx,chatID,"THEOGBOT\n\nYour transfers, in one place.\nChoose an action.")
 	}
 }
 func (b *Bot) onAccountEvent(userID int64,state string,err error){

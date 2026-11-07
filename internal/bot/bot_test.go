@@ -122,3 +122,27 @@ func TestProgressSpeedUsesOneSecondWindowAndResetsBetweenStages(t *testing.T) {
 	p.recordByteSample("Uploading", 0, 20<<20, start.Add(2*time.Second))
 	if p.speed != 0 { t.Fatalf("speed after stage reset = %f, want 0", p.speed) }
 }
+
+func TestProgressBarIsClampedAndConsistent(t *testing.T) {
+	if got:=progressBar(0);got!="················"{t.Fatalf("zero bar = %q",got)}
+	if got:=progressBar(100);got!="━━━━━━━━━━━━━━━━"{t.Fatalf("full bar = %q",got)}
+	if got:=progressBar(200);got!=progressBar(100){t.Fatalf("bar should clamp above 100: %q",got)}
+	if got:=progressBar(-1);got!=progressBar(0){t.Fatalf("bar should clamp below 0: %q",got)}
+}
+
+func TestProgressMessageIsCleanAndUsesPhaseBytes(t *testing.T) {
+	got:=formatProgress("Batch","Uploading",4,10,3,0,0,4,10,2*1024*1024,2*time.Minute)
+	for _,want:=range []string{"BATCH","Uploading  ·  40%","4 of 10 items","4.0 KiB of 10.0 KiB","2.0 MiB/s","left"} {
+		if !strings.Contains(got,want){t.Fatalf("progress missing %q: %s",want,got)}
+	}
+	for _,unwanted:=range []string{"Stage:","Bytes:","Speed:","Elapsed:"} {
+		if strings.Contains(got,unwanted){t.Fatalf("debug label %q leaked into progress: %s",unwanted,got)}
+	}
+}
+
+func TestProgressCompletionHasNoDebugFields(t *testing.T) {
+	got:=formatProgress("Copy","Finished",5,5,5,0,0,0,0,0,75*time.Second)
+	for _,want:=range []string{"TRANSFER COMPLETE","100%","5 of 5 items","Completed in 1m15s"} {
+		if !strings.Contains(got,want){t.Fatalf("completion missing %q: %s",want,got)}
+	}
+}
