@@ -131,7 +131,7 @@ func TestProgressBarIsClampedAndConsistent(t *testing.T) {
 }
 
 func TestProgressMessageIsCleanAndUsesPhaseBytes(t *testing.T) {
-	got:=formatProgress("Batch","Uploading",4,10,3,0,0,4,10,2*1024*1024,2*time.Minute)
+	got:=formatProgress("Batch","Uploading",4,10,3,0,0,4*1024,10*1024,2*1024*1024,2*time.Minute)
 	for _,want:=range []string{"BATCH","Uploading  ·  40%","4 of 10 items","4.0 KiB of 10.0 KiB","2.0 MiB/s","left"} {
 		if !strings.Contains(got,want){t.Fatalf("progress missing %q: %s",want,got)}
 	}
