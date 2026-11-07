@@ -8,7 +8,8 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 - `/batch LINK [LINK ...]`: transfer only the explicitly linked posts, in the supplied order. Links must belong to one source chat.
 - `/copy CHAT_LINK [LIMIT]`: transfer accessible chat history. A post permalink can identify the chat; the trailing post ID is ignored in history mode. Default limit is 50000, maximum 50000.
 - `/cancel`: cancel your active transfer.
-- `/storage`: check whether the separate uploader is connected.
+- `/setstorage`: choose your personal destination by forwarding a message from its group/channel in private chat.
+- `/storage`: show your saved destination and uploader access status.
 - `/info`, `/help`, `/start`, `/logout`.
 
 ## Required Railway variables
@@ -18,7 +19,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 | `BOT_TOKEN` | Yes | BotFather token. Used for Bot API commands and the separate MTProto uploader identity. |
 | `API_ID` | Yes | Numeric API ID from https://my.telegram.org/apps. |
 | `API_HASH` | Yes | API hash from https://my.telegram.org/apps. |
-| `STORAGE_TARGET` | Yes for transfers | Public username (e.g. `@my_storage_group`) or private numeric ID (e.g. `-1001234567890`). |
+| `STORAGE_TARGET` | No | Optional shared fallback destination (private numeric ID). Prefer `/setstorage` for per-user destinations. |
 | `TEMP_DIR` | No | Writable temporary directory; defaults to the OS temp directory. |
 
 ## Telegram setup
@@ -27,7 +28,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 2. Get `API_ID` and `API_HASH` from https://my.telegram.org/apps.
 3. Create or choose a private storage group/channel.
 4. Add the exact bot whose token is configured in `BOT_TOKEN` to that destination. Give it permission to send media (and post messages for channels).
-5. Set `STORAGE_TARGET` to the destination's numeric ID or public username.
+5. In a private chat with TheOGBot, send `/setstorage` and forward a message from your destination group/channel. The destination is stored per user in memory. The uploader bot must already be a member.
 6. The source account that invokes transfers separately logs in with `/login` and must already be able to access the source chat.
 7. Keep credentials in Railway Variables, never in Git.
 
@@ -39,7 +40,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 - The transfer pipeline downloads supported media to temporary disk and uploads it as a new message. Text-only messages are sent as text; photos are uploaded as photos; documents retain their filename, MIME type, video/audio/sticker attributes and caption text where Telegram exposes them.
 - Media downloads are capped at 2 GiB per item. Unsupported/service messages are reported as skipped rather than counted as uploads. Caption entities, thumbnails and album grouping are not yet preserved.
 - Messages explicitly marked as protected are not downloaded. Telegram's API response is authoritative; the bot does not claim to override Telegram restrictions.
-- Sessions are memory-only and are lost when Railway restarts or redeploys; users must log in again.
+- Source sessions and per-user destinations are memory-only and are lost when Railway restarts or redeploys; users must log in again and configure `/setstorage` again.
 - Temporary files use Railway's ephemeral filesystem. Ensure adequate free space for the largest file being transferred.
 - Transfers are sequential per user. `/cancel` requests safe cancellation.
 

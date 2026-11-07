@@ -33,7 +33,7 @@ type Client struct {
 const startupTimeout = 20 * time.Second
 
 func New(appID int, appHash, token, target string) (*Client, error) {
-	if appID <= 0 || appHash == "" || token == "" || target == "" { return nil, errors.New("API_ID, API_HASH, BOT_TOKEN and STORAGE_TARGET are required") }
+	if appID <= 0 || appHash == "" || token == "" { return nil, errors.New("API_ID, API_HASH and BOT_TOKEN are required") }
 	return &Client{appID:appID, appHash:appHash, token:token, target:target, ready:make(chan struct{})}, nil
 }
 
@@ -81,9 +81,15 @@ func (c *Client) Ready(ctx context.Context) error {
 }
 
 func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass) (tg.UpdatesClass, error) {
+	return c.UploadPathTo(ctx, nil, path, filename, mime, caption, kind, attrs)
+}
+
+func (c *Client) UploadPathTo(ctx context.Context, destination tg.InputPeerClass, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass) (tg.UpdatesClass, error) {
 	if err := c.Ready(ctx); err != nil { return nil, err }
 	c.mu.RLock()
-	s, u, peer := c.sender, c.uploader, c.targetPeer
+	s, u, configuredPeer := c.sender, c.uploader, c.targetPeer
+	peer := destination
+	if peer == nil { peer = configuredPeer }
 	c.mu.RUnlock()
 	file, err := u.FromPath(ctx, path)
 	if err != nil { return nil, fmt.Errorf("upload file: %w", err) }
@@ -101,13 +107,25 @@ func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption, 
 }
 
 func (c *Client) SendText(ctx context.Context, text string) (tg.UpdatesClass, error) {
+	return c.SendTextTo(ctx, nil, text)
+}
+
+func (c *Client) SendTextTo(ctx context.Context, destination tg.InputPeerClass, text string) (tg.UpdatesClass, error) {
 	if strings.TrimSpace(text) == "" { return nil, errors.New("text message is empty") }
 	if err := c.Ready(ctx); err != nil { return nil, err }
 	c.mu.RLock()
-	s, peer := c.sender, c.targetPeer
+	s, configuredPeer := c.sender, c.targetPeer
+	peer := destination
+	if peer == nil { peer = configuredPeer }
 	c.mu.RUnlock()
 	if peer != nil { return s.To(peer).Text(ctx, text) }
 	return s.Resolve(c.target).Text(ctx, text)
+}
+
+func (c *Client) ResolvePeer(ctx context.Context, target string) (tg.InputPeerClass, error) {
+	if err := c.Ready(ctx); err != nil { return nil, err }
+	c.mu.RLock(); api := c.api; c.mu.RUnlock()
+	return resolveTarget(ctx, api, target)
 }
 
 func resolveTarget(ctx context.Context, api *tg.Client, target string) (tg.InputPeerClass, error) {

@@ -35,18 +35,27 @@ type Bot struct {
 	tempDir string
 	jobsMu sync.Mutex
 	jobs map[int64]context.CancelFunc
+	destMu sync.RWMutex
+	destinations map[int64]destination
+	awaitingDestination map[int64]bool
 }
 
 type update struct {
 	UpdateID int64 `json:"update_id"`
 	Message *incomingMessage `json:"message"`
 }
+type forwardedChat struct { ID int64 `json:"id"`; Title string `json:"title"`; Username string `json:"username"` }
+type forwardOrigin struct { Type string `json:"type"`; Chat *forwardedChat `json:"chat"`; SenderChat *forwardedChat `json:"sender_chat"` }
+func (o *forwardOrigin) sourceChat() *forwardedChat { if o == nil { return nil }; if o.Chat != nil { return o.Chat }; return o.SenderChat }
+
 type incomingMessage struct {
 	MessageID int64 `json:"message_id"`
 	Text string `json:"text"`
 	Chat struct { ID int64 `json:"id"`; Type string `json:"type"` } `json:"chat"`
 	From struct { ID int64 `json:"id"` } `json:"from"`
+	ForwardOrigin *forwardOrigin `json:"forward_origin"`
 }
+type destination struct { ChatID int64; Title string; Username string }
 type botIdentity struct { Username string `json:"username"` }
 type apiResponse[T any] struct {
 	OK bool `json:"ok"`
@@ -58,7 +67,7 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 	return &Bot{token: token, client: &http.Client{
 		Timeout: 45*time.Second,
 		Transport: &http.Transport{Proxy:http.ProxyFromEnvironment,MaxIdleConns:100,MaxIdleConnsPerHost:20,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:10*time.Second,ResponseHeaderTimeout:40*time.Second,DialContext:(&net.Dialer{Timeout:10*time.Second,KeepAlive:30*time.Second}).DialContext},
-	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc)}
+	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool)}
 }
 
 func (b *Bot) SetStorage(client *storage.Client) { b.storage = client }
@@ -80,15 +89,15 @@ func (b *Bot) Run(ctx context.Context) error {
 }
 
 func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
-	text:=strings.TrimSpace(msg.Text);if text==""||msg.Chat.ID==0{return}
+	text:=strings.TrimSpace(msg.Text);if msg.Chat.ID==0{return};if b.captureForwardedDestination(ctx,msg) { return };if text=="" { return }
 	fields:=strings.Fields(text);command:=strings.ToLower(fields[0]);if i:=strings.IndexByte(command,'@');i>=0{command=command[:i]}
 	var reply string
 	if (command=="/code"||command=="/password")&&msg.Chat.Type!="private"{_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);_=b.sendMessage(ctx,msg.Chat.ID,"For account security, send login codes and 2FA passwords only in a private chat with this bot.");return}
 	switch command {
 	case "/start":
-		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer selected posts\n/copy CHAT_LINK [LIMIT] — copy accessible chat history (default: up to 50000)\n/cancel — cancel your active transfer\n/storage — storage uploader status\n/logout — disconnect\n/info — account status"
+		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer selected posts\n/copy CHAT_LINK [LIMIT] — copy accessible chat history (default: up to 50000)\n/cancel — cancel your active transfer\n/setstorage — configure destination by forwarding a message\n/storage — your destination status\n/logout — disconnect\n/info — account status"
 	case "/help":
-		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer only the linked posts, in supplied order\n/copy CHAT_LINK [LIMIT] — copy accessible history, default 50000, max 50000\n/cancel — cancel your active transfer\n/storage — check uploader connection\n/logout — disconnect\n/info — account status\n\nUse chats your account can access. Telegram restrictions and flood waits are respected."
+		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — transfer only the linked posts, in supplied order\n/copy CHAT_LINK [LIMIT] — copy accessible history, default 50000, max 50000\n/cancel — cancel your active transfer\n/setstorage — configure destination by forwarding a message\n/storage — destination status\n/logout — disconnect\n/info — account status\n\nUse chats your account can access. Telegram restrictions and flood waits are respected."
 	case "/login":
 		if len(fields)<2{reply="Usage: /login +COUNTRYCODEPHONE\nThen /code YOUR_CODE and, if prompted, /password YOUR_2FA_PASSWORD"}else if b.accounts==nil{reply="MTProto unavailable. Configure API_ID and API_HASH."}else if b.accounts.Connected(msg.From.ID){reply="An account session is already active. Use /logout first."}else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil{reply="Could not start login: "+err.Error()}else{reply="Login started. Submit the Telegram code here using /code YOUR_CODE."}
 	case "/code":
@@ -103,8 +112,15 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=50000;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(jobCtx,msg.From.ID,msg.Chat.ID,fields[1],limit)}();return}}}
 	case "/cancel":
 		if b.cancelJob(msg.From.ID){reply="Cancellation requested. The current operation will stop safely."}else{reply="No active transfer to cancel."}
+	case "/setstorage":
+		if msg.Chat.Type != "private" { reply = "Configure your destination in a private chat with this bot." } else {
+			b.destMu.Lock()
+			b.awaitingDestination[msg.From.ID] = true
+			b.destMu.Unlock()
+			reply = "Forward any message from your destination group/channel to this bot. The uploader bot must already be a member with posting permission."
+		}
 	case "/storage":
-		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else { reply = fmt.Sprintf("Storage uploader: connected\nDestination: %s\nUpload mode: download → upload\nPosting permission: checked when the first upload is attempted", b.storage.Target()) }
+		if b.storage == nil { reply = "Storage uploader is not configured." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else if d, ok := b.getDestination(msg.From.ID); ok { reply = fmt.Sprintf("Uploader: connected\nYour destination: %s\nChat ID: %d\nAccess: visible to uploader bot; posting rights are checked on transfer", d.Title, d.ChatID) } else { reply = "Uploader: connected\nNo personal destination configured. Send /setstorage, then forward a message from your destination group/channel." }
 	case "/logout":
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
@@ -127,7 +143,7 @@ func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []str
 		if source!=nil&&peerKey(source)!=peerKey(peer){_=b.sendMessage(ctx,chatID,"All /batch links must belong to the same source chat.");return}
 		source=peer;ids=append(ids,parsed.MessageID)
 	}
-	b.executeTransfer(ctx,api,source,chatID,ids,"Batch")
+	b.executeTransfer(ctx,userID,api,source,chatID,ids,"Batch")
 }
 
 func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limit int) {
@@ -140,10 +156,10 @@ func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limi
 	_=b.sendMessage(ctx,chatID,fmt.Sprintf("Reading accessible history (limit %d)…",limit))
 	ids,err:=forward.FetchHistoryIDs(ctx,api,source,limit);if err!=nil{_=b.sendMessage(ctx,chatID,"History retrieval failed: "+err.Error());return}
 	if len(ids)==0{_=b.sendMessage(ctx,chatID,"No messages found in accessible history.");return}
-	b.executeTransfer(ctx,api,source,chatID,ids,"Copy")
+	b.executeTransfer(ctx,userID,api,source,chatID,ids,"Copy")
 }
 
-func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.InputPeerClass, chatID int64, ids []int, label string) {
+func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client, source tg.InputPeerClass, chatID int64, ids []int, label string) {
 	if b.storage == nil {
 		_ = b.sendMessage(ctx, chatID, "Storage uploader is not configured. Set STORAGE_TARGET and restart.")
 		return
@@ -152,6 +168,10 @@ func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.Inp
 		_ = b.sendMessage(ctx, chatID, "Storage uploader is not ready: "+err.Error())
 		return
 	}
+	d, ok := b.getDestination(userID)
+	if !ok { _ = b.sendMessage(ctx, chatID, "Set your destination first: send /setstorage, then forward a message from your destination group/channel."); return }
+	destinationPeer, err := b.storage.ResolvePeer(ctx, strconv.FormatInt(d.ChatID,10))
+	if err != nil { _ = b.sendMessage(ctx, chatID, "Your destination is not accessible to the uploader bot: "+err.Error()+". Add the configured uploader bot with posting permission, then run /setstorage again."); return }
 	if len(ids) == 0 {
 		_ = b.sendMessage(ctx, chatID, label+": no messages to transfer.")
 		return
@@ -174,7 +194,7 @@ func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.Inp
 		downloaded, err := media.DownloadMessage(ctx,api,elem,b.tempDir)
 		if err != nil {
 			if msg, ok := elem.Msg.(*tg.Message); ok && strings.TrimSpace(msg.Message) != "" && msg.Media == nil {
-				if _, textErr := b.storage.SendText(ctx, msg.Message); textErr != nil {
+				if _, textErr := b.storage.SendTextTo(ctx, destinationPeer, msg.Message); textErr != nil {
 					failed++
 					_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] text upload failed for message %d: %v",label,i+1,len(ids),id,textErr))
 				} else {
@@ -187,7 +207,7 @@ func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.Inp
 			_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] skipped message %d: %v",label,i+1,len(ids),id,err))
 			continue
 		}
-		_, uploadErr := b.storage.UploadPath(ctx,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes)
+		_, uploadErr := b.storage.UploadPathTo(ctx,destinationPeer,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes)
 		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
 			failed++
@@ -225,6 +245,42 @@ func peerKey(peer tg.InputPeerClass) string {
 	case *tg.InputPeerUser: return fmt.Sprintf("user:%d",p.UserID)
 	default: return fmt.Sprintf("%T",peer)
 	}
+}
+
+
+func (b *Bot) getDestination(userID int64) (destination, bool) {
+	b.destMu.RLock()
+	defer b.destMu.RUnlock()
+	d, ok := b.destinations[userID]
+	return d, ok
+}
+
+func (b *Bot) captureForwardedDestination(ctx context.Context, msg *incomingMessage) bool {
+	b.destMu.Lock()
+	pending := b.awaitingDestination[msg.From.ID]
+	if pending && msg.ForwardOrigin != nil && msg.ForwardOrigin.sourceChat() != nil { delete(b.awaitingDestination, msg.From.ID) }
+	b.destMu.Unlock()
+	if !pending || msg.ForwardOrigin == nil || msg.ForwardOrigin.sourceChat() == nil { return false }
+	if msg.Chat.Type != "private" { _ = b.sendMessage(ctx,msg.Chat.ID,"Please forward the destination message in a private chat with this bot."); return true }
+	origin := msg.ForwardOrigin
+	forwardedChat := origin.sourceChat()
+	if origin.Type != "chat" && origin.Type != "channel" { _ = b.sendMessage(ctx,msg.Chat.ID,"Please forward a message from a group or channel, not a user or hidden source."); return true }
+	if forwardedChat == nil || forwardedChat.ID >= 0 { _ = b.sendMessage(ctx,msg.Chat.ID,"That forwarded message does not identify a group/channel destination."); return true }
+	if b.storage == nil { _ = b.sendMessage(ctx,msg.Chat.ID,"Uploader is not configured."); return true }
+	resolveCtx,cancel := context.WithTimeout(ctx,15*time.Second)
+	defer cancel()
+	if _,err := b.storage.ResolvePeer(resolveCtx,strconv.FormatInt(forwardedChat.ID,10)); err != nil {
+		_ = b.sendMessage(ctx,msg.Chat.ID,"The uploader bot cannot access this destination: "+err.Error()+". Add it to the destination with posting permission, then run /setstorage again.")
+		return true
+	}
+	title := strings.TrimSpace(forwardedChat.Title)
+	if title=="" { title=forwardedChat.Username }
+	if title=="" { title=strconv.FormatInt(forwardedChat.ID,10) }
+	b.destMu.Lock()
+	b.destinations[msg.From.ID]=destination{ChatID:forwardedChat.ID,Title:title,Username:forwardedChat.Username}
+	b.destMu.Unlock()
+	_ = b.sendMessage(ctx,msg.Chat.ID,fmt.Sprintf("Destination saved for your account.\nName: %s\nChat ID: %d\nUploader bot can see this chat. Posting permission will be checked on transfer.",title,forwardedChat.ID))
+	return true
 }
 
 func (b *Bot) deleteMessage(ctx context.Context,chatID,messageID int64)error{return b.call(ctx,"deleteMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(messageID,10)}},nil)}

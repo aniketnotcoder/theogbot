@@ -11,7 +11,16 @@ The destination bot session is distinct from every user's source session. Do not
 
 ## Phases and acceptance gates
 
-### Phase 1 — media transfer foundation
+### Phase 1 — identity and per-user destination setup
+- Keep Bot API control, personal MTProto source identity, and the separate uploader bot identity distinct.
+- Add `/setstorage`: the user forwards a message from a group/channel in a private chat; resolve that destination through the uploader bot's own dialogs.
+- Store the destination per user in memory and use it for that user's `/batch` and `/copy` jobs.
+- `/storage` reports the user's selected destination and whether the uploader bot can see it.
+- Require the uploader bot to be a member with posting rights; never infer access from the source user's membership.
+
+**Gate:** two users can select different destination chats, and the uploader identity can resolve each selected destination before transfer.
+
+### Phase 2 — message transfer semantics
 - Use the repository's pinned gotd/td v0.130.0 API.
 - Extract media metadata and download locations from supported message types.
 - Download to temporary disk with cancellation, size limits, cleanup, and byte-progress callbacks.
@@ -21,14 +30,6 @@ The destination bot session is distinct from every user's source session. Do not
 - Record Telegram retrieval errors accurately. Do not attempt to defeat Telegram content-protection controls.
 
 **Gate:** a permitted test file can be downloaded by the source account and uploaded by the bot into the configured storage chat, with the resulting message identified.
-
-### Phase 2 — storage destination
-- Add STORAGE_CHAT_ID configuration.
-- Resolve the private destination from the bot account's dialogs and verify that the bot can post.
-- Add /storage status and clear setup diagnostics.
-- Return a t.me/c/<id>/<message_id> style link only when valid; otherwise provide a useful fallback.
-
-**Gate:** bot can post a small test file into the actual private storage group.
 
 ### Phase 3 — /batch and /copy on the media pipeline
 - Replace native forwarding as the primary path with download → upload.
@@ -54,7 +55,7 @@ The destination bot session is distinct from every user's source session. Do not
 
 ## Current baseline (2026-11-06)
 
-The current branch uses the authenticated user MTProto account for source retrieval and an independent bot-authenticated MTProto uploader for destination posts. /batch now retrieves only the exact IDs supplied by the user through messages.getMessages / channels.getMessages; /copy still uses paginated history. Transfer results are reassembled in the caller-supplied order. Destination is still one configured STORAGE_TARGET, not a per-user destination selector.
+The current branch uses the authenticated user MTProto account for source retrieval and an independent bot-authenticated MTProto uploader for destination posts. /batch retrieves exact supplied IDs through messages.getMessages / channels.getMessages and preserves input order. /copy uses paginated history. Per-user destination setup is being added through /setstorage by forwarding a message from the destination; destination selections are currently memory-only.
 
 Latest main CI: successful Go CI run #24 at commit 46f7cc5a12f596a7b547cc14cf6678856ed79074.
 

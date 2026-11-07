@@ -1,6 +1,6 @@
 package bot
 
-import "testing"
+import ("testing"; "encoding/json")
 
 func TestParseChatLink(t *testing.T) {
 	tests := []struct {
@@ -31,4 +31,28 @@ func TestParseChatLink(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestForwardOriginDecodesChannelAndGroup(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"channel","chat":{"id":-1001234567890,"title":"Channel"}}`,
+		`{"type":"chat","sender_chat":{"id":-1009876543210,"title":"Group"}}`,
+	} {
+		var origin forwardOrigin
+		if err := json.Unmarshal([]byte(raw), &origin); err != nil { t.Fatal(err) }
+		chat := origin.sourceChat()
+		if chat == nil || chat.ID >= 0 || chat.Title == "" { t.Fatalf("invalid forwarded destination: %+v", chat) }
+	}
+}
+
+func TestDestinationIsIsolatedPerUser(t *testing.T) {
+	b := &Bot{destinations: map[int64]destination{
+		11: {ChatID:-100111, Title:"First"},
+		22: {ChatID:-100222, Title:"Second"},
+	}}
+	first, ok := b.getDestination(11)
+	if !ok || first.ChatID != -100111 { t.Fatalf("first destination = %+v, %v", first, ok) }
+	second, ok := b.getDestination(22)
+	if !ok || second.ChatID != -100222 { t.Fatalf("second destination = %+v, %v", second, ok) }
+	if _, ok := b.getDestination(33); ok { t.Fatal("unexpected destination for unconfigured user") }
 }
