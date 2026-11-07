@@ -84,10 +84,9 @@ func extractMessageIDs(result tg.MessagesMessagesClass) ([]int,error) {
 	}
 	ids:=make([]int,0,len(messages))
 	for _,item:=range messages {
-		switch msg:=item.(type) {
-		case *tg.Message: ids=append(ids,msg.ID)
-		case *tg.MessageService: ids=append(ids,msg.ID)
-		}
+		// Service events (e.g. "channel created") are not user content and
+		// cannot be copied as ordinary messages.
+		if msg, ok := item.(*tg.Message); ok { ids = append(ids, msg.ID) }
 	}
 	return ids,nil
 }

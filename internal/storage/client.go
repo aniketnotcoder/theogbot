@@ -23,6 +23,15 @@ import (
 
 type TransferProgress func(current, total int64)
 
+// Telegram allows upload parts up to 512 KiB. gotd v0.130 defaults to
+// 128 KiB, which can exceed server part-count limits on large files.
+const uploadThreads = 8
+const uploadPartSize = uploader.MaximumPartSize
+
+func newTransferUploader(api *tg.Client) *uploader.Uploader {
+	return uploader.NewUploader(api).WithPartSize(uploadPartSize).WithThreads(uploadThreads)
+}
+
 type uploadProgress struct { mu sync.Mutex; uploaded map[int64]int64; total int64; callback TransferProgress }
 func (p *uploadProgress) Chunk(_ context.Context, state uploader.ProgressState) error {
 	p.mu.Lock(); if p.uploaded == nil { p.uploaded = make(map[int64]int64) }; p.uploaded[state.ID] = state.Uploaded
@@ -67,7 +76,7 @@ func (c *Client) Run(ctx context.Context) error {
 		defer cancelStartup()
 		if _, err := client.Auth().Bot(startupCtx, c.token); err != nil { return fmt.Errorf("authenticate storage bot: %w", err) }
 		api := tg.NewClient(client)
-		u := uploader.NewUploader(api).WithThreads(4)
+		u := newTransferUploader(api)
 		s := message.NewSender(api).WithUploader(u)
 		var peer tg.InputPeerClass
 		if strings.HasPrefix(strings.TrimSpace(c.target), "-") {
@@ -116,7 +125,7 @@ func (c *Client) UploadPathToWithProgress(ctx context.Context, destination tg.In
 	c.mu.RLock(); api,configuredPeer:=c.api,c.targetPeer; peer:=destination; if peer==nil{peer=configuredPeer}; target:=c.target; c.mu.RUnlock()
 	info,err:=os.Stat(path);if err!=nil{return nil,fmt.Errorf("stat upload file: %w",err)}
 	return retryFloodWait(ctx,func()(tg.UpdatesClass,error){
-		u:=uploader.NewUploader(api).WithThreads(4).WithProgress(&uploadProgress{total:info.Size(),callback:progress})
+		u:=newTransferUploader(api).WithProgress(&uploadProgress{total:info.Size(),callback:progress})
 		s:=message.NewSender(api).WithUploader(u)
 		file,err:=u.FromPath(ctx,path);if err!=nil{return nil,fmt.Errorf("upload file: %w",err)}
 		captionOption:=captionOptions(caption,entities)
@@ -145,7 +154,7 @@ func (c *Client) UploadAlbumToWithProgress(ctx context.Context,destination tg.In
 	if peer==nil&&strings.TrimSpace(target)==""{return nil,errors.New("album destination is required")}
 	var total int64;for i,item:=range items{if item.Kind!="photo"&&item.Kind!="video"{return nil,fmt.Errorf("album item %d has unsupported kind %q; only photos and videos can be grouped",i+1,item.Kind)};info,err:=os.Stat(item.Path);if err!=nil{return nil,fmt.Errorf("stat album item %d: %w",i+1,err)};total+=info.Size()}
 	return retryFloodWait(ctx,func()(tg.UpdatesClass,error){
-		u:=uploader.NewUploader(api).WithThreads(4).WithProgress(&uploadProgress{total:total,callback:progress});s:=message.NewSender(api).WithUploader(u)
+		u:=newTransferUploader(api).WithProgress(&uploadProgress{total:total,callback:progress});s:=message.NewSender(api).WithUploader(u)
 		options:=make([]message.MultiMediaOption,0,len(items))
 		for i,item:=range items{
 			file,err:=u.FromPath(ctx,item.Path);if err!=nil{return nil,fmt.Errorf("upload album item %d: %w",i+1,err)}

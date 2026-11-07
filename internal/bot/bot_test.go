@@ -110,3 +110,15 @@ func TestHumanBytesAndSpeed(t *testing.T) {
 	if got:=humanSpeed(0);got!="calculating…"{t.Fatalf("humanSpeed(0)=%q",got)}
 	if got:=humanSpeed(2048);got!="2.0 KiB/s"{t.Fatalf("humanSpeed(2048)=%q",got)}
 }
+
+func TestProgressSpeedUsesOneSecondWindowAndResetsBetweenStages(t *testing.T) {
+	p := &progressReporter{}
+	start := time.Unix(100, 0)
+	p.recordByteSample("Downloading", 0, 20<<20, start)
+	p.recordByteSample("Downloading", 1<<20, 20<<20, start.Add(100*time.Millisecond))
+	if p.speed != 0 { t.Fatalf("speed after a 100ms burst = %f, want no unstable sample", p.speed) }
+	p.recordByteSample("Downloading", 10<<20, 20<<20, start.Add(time.Second))
+	if p.speed < 9<<20 || p.speed > 11<<20 { t.Fatalf("one-second throughput = %f, want about 10 MiB/s", p.speed) }
+	p.recordByteSample("Uploading", 0, 20<<20, start.Add(2*time.Second))
+	if p.speed != 0 { t.Fatalf("speed after stage reset = %f, want 0", p.speed) }
+}
