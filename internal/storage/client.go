@@ -12,11 +12,11 @@ import (
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/message"
+	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 )
 
-// Client is a bot-authenticated MTProto uploader, separate from user source sessions.
 type Client struct {
 	appID int
 	appHash, token, target string
@@ -33,9 +33,7 @@ type Client struct {
 const startupTimeout = 20 * time.Second
 
 func New(appID int, appHash, token, target string) (*Client, error) {
-	if appID <= 0 || appHash == "" || token == "" || target == "" {
-		return nil, errors.New("API_ID, API_HASH, BOT_TOKEN and STORAGE_TARGET are required")
-	}
+	if appID <= 0 || appHash == "" || token == "" || target == "" { return nil, errors.New("API_ID, API_HASH, BOT_TOKEN and STORAGE_TARGET are required") }
 	return &Client{appID:appID, appHash:appHash, token:token, target:target, ready:make(chan struct{})}, nil
 }
 
@@ -44,10 +42,7 @@ func (c *Client) Run(ctx context.Context) error {
 	err := client.Run(ctx, func(clientCtx context.Context) error {
 		startupCtx, cancelStartup := context.WithTimeout(clientCtx, startupTimeout)
 		defer cancelStartup()
-
-		if _, err := client.Auth().Bot(startupCtx, c.token); err != nil {
-			return fmt.Errorf("authenticate storage bot: %w", err)
-		}
+		if _, err := client.Auth().Bot(startupCtx, c.token); err != nil { return fmt.Errorf("authenticate storage bot: %w", err) }
 		api := tg.NewClient(client)
 		u := uploader.NewUploader(api).WithThreads(4)
 		s := message.NewSender(api).WithUploader(u)
@@ -72,6 +67,8 @@ func (c *Client) Run(ctx context.Context) error {
 	return err
 }
 
+func (c *Client) Target() string { return c.target }
+
 func (c *Client) Ready(ctx context.Context) error {
 	select {
 	case <-ctx.Done(): return ctx.Err()
@@ -83,30 +80,40 @@ func (c *Client) Ready(ctx context.Context) error {
 	}
 }
 
-// UploadPath posts a new document message to the configured destination.
-// STORAGE_TARGET accepts a public username or a private numeric chat ID (-100... for channels/supergroups).
-func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption string) (tg.UpdatesClass, error) {
+func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass) (tg.UpdatesClass, error) {
 	if err := c.Ready(ctx); err != nil { return nil, err }
 	c.mu.RLock()
 	s, u, peer := c.sender, c.uploader, c.targetPeer
 	c.mu.RUnlock()
 	file, err := u.FromPath(ctx, path)
 	if err != nil { return nil, fmt.Errorf("upload file: %w", err) }
-	doc := message.UploadedDocument(file).Filename(filename).MIME(mime)
-	_ = caption // Caption styling is added with the message-metadata phase.
+	captionOption := []styling.StyledTextOption{}
+	if caption != "" { captionOption = append(captionOption, styling.Plain(caption)) }
+	if kind == "photo" {
+		if peer != nil { return s.To(peer).UploadedPhoto(ctx, file, captionOption...) }
+		return s.Resolve(c.target).UploadedPhoto(ctx, file, captionOption...)
+	}
+	preserved := make([]tg.DocumentAttributeClass, 0, len(attrs))
+	for _, attr := range attrs { if _, isFilename := attr.(*tg.DocumentAttributeFilename); !isFilename { preserved = append(preserved, attr) } }
+	doc := message.UploadedDocument(file, captionOption...).Filename(filename).MIME(mime).Attributes(preserved...)
 	if peer != nil { return s.To(peer).Media(ctx, doc) }
 	return s.Resolve(c.target).Media(ctx, doc)
 }
 
-// resolveTarget supports public usernames and private groups/channels already
-// visible in the storage bot's dialogs. Numeric targets use Telegram's Bot API
-// chat ID form (-100<channel id> for supergroups/channels, -<chat id> for groups).
+func (c *Client) SendText(ctx context.Context, text string) (tg.UpdatesClass, error) {
+	if strings.TrimSpace(text) == "" { return nil, errors.New("text message is empty") }
+	if err := c.Ready(ctx); err != nil { return nil, err }
+	c.mu.RLock()
+	s, peer := c.sender, c.targetPeer
+	c.mu.RUnlock()
+	if peer != nil { return s.To(peer).Text(ctx, text) }
+	return s.Resolve(c.target).Text(ctx, text)
+}
+
 func resolveTarget(ctx context.Context, api *tg.Client, target string) (tg.InputPeerClass, error) {
 	target = strings.TrimSpace(target)
 	if target == "" { return nil, errors.New("STORAGE_TARGET is empty") }
-	if !strings.HasPrefix(target, "-") {
-		return nil, fmt.Errorf("private numeric storage target required; public usernames are resolved by the sender at upload time")
-	}
+	if !strings.HasPrefix(target, "-") { return nil, fmt.Errorf("private numeric storage target required; public usernames are resolved by the sender at upload time") }
 	id, err := strconv.ParseInt(target, 10, 64)
 	if err != nil { return nil, fmt.Errorf("invalid numeric chat ID %q", target) }
 	result, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{OffsetPeer:&tg.InputPeerEmpty{}, Limit:200, Hash:0})

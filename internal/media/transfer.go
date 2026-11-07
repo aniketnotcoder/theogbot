@@ -15,11 +15,16 @@ import (
 
 var ErrProtectedMessage = errors.New("Telegram marks this message as protected (noforwards); download was not attempted")
 
-type Downloaded struct { Path, Name, MIME string; Size int64 }
+type Downloaded struct {
+	Path, Name, MIME, Kind, Caption string
+	Size int64
+	Attributes []tg.DocumentAttributeClass
+}
 
-// DownloadMessage downloads a photo/document attachment from an accessible,
-// non-protected message into a temporary file. Telegram remains authoritative
-// about whether a media location can be retrieved.
+const MaxDownloadBytes int64 = 2 << 30
+
+// DownloadMessage downloads an accessible, non-protected photo or document.
+// Telegram remains authoritative about whether a media location can be retrieved.
 func DownloadMessage(ctx context.Context, api *tg.Client, elem messages.Elem, tempDir string) (_ *Downloaded, err error) {
 	if api == nil { return nil, errors.New("source MTProto API is required") }
 	msg, ok := elem.Msg.(*tg.Message)
@@ -27,6 +32,16 @@ func DownloadMessage(ctx context.Context, api *tg.Client, elem messages.Elem, te
 	if msg.Noforwards { return nil, ErrProtectedMessage }
 	file, ok := elem.File()
 	if !ok { return nil, errors.New("message has no photo or document attachment") }
+
+	kind := "document"
+	var attributes []tg.DocumentAttributeClass
+	if _, isPhoto := elem.Photo(); isPhoto {
+		kind = "photo"
+	} else if doc, isDocument := elem.Document(); isDocument {
+		if doc.Size > MaxDownloadBytes { return nil, fmt.Errorf("media is larger than the configured %d-byte limit", MaxDownloadBytes) }
+		attributes = append(attributes, doc.Attributes...)
+	}
+
 	if strings.TrimSpace(tempDir) == "" { tempDir = os.TempDir() }
 	if err := os.MkdirAll(tempDir, 0700); err != nil { return nil, fmt.Errorf("create temp directory: %w", err) }
 	f, err := os.CreateTemp(tempDir, "theogbot-*")
@@ -34,14 +49,17 @@ func DownloadMessage(ctx context.Context, api *tg.Client, elem messages.Elem, te
 	path := f.Name()
 	if err := f.Close(); err != nil { _ = os.Remove(path); return nil, err }
 	defer func(){ if err != nil { _ = os.Remove(path) } }()
+
 	_, err = downloader.NewDownloader().Download(api, file.Location).WithThreads(4).ToPath(ctx, path)
 	if err != nil { return nil, fmt.Errorf("download %q: %w", file.Name, err) }
 	info, err := os.Stat(path)
 	if err != nil { return nil, err }
 	if info.Size() == 0 { return nil, errors.New("Telegram returned an empty media file") }
+	if info.Size() > MaxDownloadBytes { return nil, fmt.Errorf("download exceeded the configured %d-byte limit", MaxDownloadBytes) }
+
 	name := filepath.Base(strings.TrimSpace(file.Name))
 	if name == "." || name == string(filepath.Separator) || name == "" { name = "telegram-file" }
-	return &Downloaded{Path:path, Name:name, MIME:file.MIMEType, Size:info.Size()}, nil
+	return &Downloaded{Path:path, Name:name, MIME:file.MIMEType, Size:info.Size(), Kind:kind, Caption:msg.Message, Attributes:attributes}, nil
 }
 
 func (d *Downloaded) Cleanup() error {

@@ -23,3 +23,9 @@ func TestCleanupNilSafe(t *testing.T) {
 func TestProtectedError(t *testing.T) {
 	if ErrProtectedMessage == nil || ErrProtectedMessage.Error() == "" { t.Fatal("protected-content diagnostic must be defined") }
 }
+
+func TestDownloadLimitIsBounded(t *testing.T) {
+	if MaxDownloadBytes <= 0 || MaxDownloadBytes > 2<<30 {
+		t.Fatalf("unexpected download limit: %d", MaxDownloadBytes)
+	}
+}

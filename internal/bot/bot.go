@@ -104,7 +104,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	case "/cancel":
 		if b.cancelJob(msg.From.ID){reply="Cancellation requested. The current operation will stop safely."}else{reply="No active transfer to cancel."}
 	case "/storage":
-		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else { reply = "Storage uploader: connected\nDestination: configured\nUpload mode: download → upload" }
+		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else { reply = fmt.Sprintf("Storage uploader: connected\nDestination: %s\nUpload mode: download → upload\nPosting permission: checked when the first upload is attempted", b.storage.Target()) }
 	case "/logout":
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
@@ -184,11 +184,21 @@ func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.Inp
 		elem := found[id]
 		downloaded, err := media.DownloadMessage(ctx,api,elem,b.tempDir)
 		if err != nil {
+			if msg, ok := elem.Msg.(*tg.Message); ok && strings.TrimSpace(msg.Message) != "" && msg.Media == nil {
+				if _, textErr := b.storage.SendText(ctx, msg.Message); textErr != nil {
+					failed++
+					_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] text upload failed for message %d: %v",label,i+1,len(ids),id,textErr))
+				} else {
+					done++
+					_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).",label,done,len(ids),failed,skipped))
+				}
+				continue
+			}
 			skipped++
 			_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] skipped message %d: %v",label,i+1,len(ids),id,err))
 			continue
 		}
-		_, uploadErr := b.storage.UploadPath(ctx,downloaded.Path,downloaded.Name,downloaded.MIME,"")
+		_, uploadErr := b.storage.UploadPath(ctx,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes)
 		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
 			failed++
