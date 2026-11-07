@@ -77,8 +77,8 @@ Gate: test history containing ID gaps and mixed media yields exactly the expecte
 - Add byte-level download/upload callbacks and throttle edits.
 - Retry FloodWait only for safe operations; avoid duplicate uploads after uncertain send outcomes.
 - Bound workers, file sizes and timeouts; check disk space; clean temporary files on cancel/failure.
-- Implementation pushed on `dev/transfer-rebuild` in commit `8645571` (with cleanup hardening in `dadae16`): parallel download byte counting, gotd uploader chunk callbacks, aggregate album upload bytes, measured speed/byte ETA, 128 MiB free-space reserve, 2 GiB item cap, four workers per file, and explicit FloodWait-only retries for message sends. CI acceptance gate remains pending.
-Gate: cancel during download/upload; no orphan temp files or duplicate uploads; counts reconcile.
+- Implemented on `dev/transfer-rebuild`: parallel download byte counting, gotd uploader chunk callbacks, aggregate album upload bytes, measured speed/byte ETA, 128 MiB free-space reserve, 2 GiB item cap, four workers per file, temporary-file cleanup, and explicit FloodWait-only retries for message sends. GitHub Actions Go CI run #56 passed dependency verification, `go test ./...`, and `go build ./cmd/theogbot`.
+Gate: CI passed. Remaining integration checks are live Railway cancellation during download/upload, no orphan temp files, no duplicate uploads, and reconciled counts.
 
 ### Phase 5 — Railway readiness
 - Decide whether sessions must survive restarts. If persistent, encrypt session material and restrict access.

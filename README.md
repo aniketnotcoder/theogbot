@@ -42,7 +42,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 - Messages explicitly marked as protected are not downloaded. Telegram's API response is authoritative; the bot does not claim to override Telegram restrictions.
 - Source sessions and per-user destinations are memory-only and are lost when Railway restarts or redeploys; users must log in again and configure `/setstorage` again.
 - Temporary files use Railway's ephemeral filesystem. Ensure adequate free space for the largest file being transferred.
-- Transfers are sequential per user. `/cancel` requests safe cancellation. A single edited progress message reports the current stage, item position, elapsed time, estimated remaining time, and uploaded/failed/skipped totals. Successful sends return destination message links where available, or chat/message identifiers for basic groups.
+- Transfers are sequential per user. `/cancel` requests safe cancellation. A single edited progress message reports the current stage, item position, live downloaded/uploaded bytes, percentage where the total is known, measured transfer speed, byte ETA, elapsed time, and uploaded/failed/skipped totals. Download and upload use up to four chunks per file. Downloads require a 128 MiB free-space reserve and are capped at 2 GiB per item. FloodWait retries are limited to explicit Telegram FloodWait responses; uncertain send outcomes are not blindly retried. Successful sends return destination message links where available, or chat/message identifiers for basic groups.
 
 ## Development
 
@@ -52,3 +52,20 @@ go test ./...
 go build ./cmd/theogbot
 go run ./cmd/theogbot
 ```
+
+
+## Railway deployment and testing
+
+No new Railway environment variables were introduced for Phase 4. Keep the existing variables:
+
+- `BOT_TOKEN` — required; the BotFather token used by the Bot API controller and the separate MTProto destination uploader.
+- `API_ID` — required positive integer from https://my.telegram.org/apps.
+- `API_HASH` — required from https://my.telegram.org/apps.
+- `STORAGE_TARGET` — optional. Leave it empty when each user will configure a destination with `/setstorage`; otherwise set a private numeric destination ID as a shared fallback. The exact bot from `BOT_TOKEN` must be a member/admin with posting rights.
+- `TEMP_DIR` — optional; defaults to the OS temporary directory. If set, use a writable path such as `/tmp/theogbot`. Ensure available temporary disk space can accommodate the largest in-flight item plus the 128 MiB reserve.
+
+After deploying the new main build, verify Railway uses the Dockerfile build and start command supplied by the repository (the Docker image entrypoint is `theogbot`). In Railway → service → Variables, retain the three required credentials, configure `STORAGE_TARGET` only if using a shared fallback, and optionally set `TEMP_DIR`. Do not add a new variable for progress or transfer limits; these are code constants.
+
+For a safe live test, use a private test destination, add the configured bot with posting rights, send `/setstorage` and forward a message from that destination, then run `/storage`. Log in with a test source account and transfer a small text/photo/video set with `/batch` or a small history with `/copy`. Confirm byte progress, speed/ETA, destination links, final counts, and then test `/cancel` on a larger permitted file. Do not test against a production channel until the private test succeeds.
+
+**Session persistence:** source-account sessions and per-user destination selections are memory-only. A Railway restart/redeploy clears them; users must run `/login` and `/setstorage` again. No persistent database or Railway volume is currently required by the code. Temporary media is ephemeral and is deleted after each transfer.
