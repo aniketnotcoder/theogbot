@@ -179,31 +179,53 @@ func (c *Client) ResolvePeer(ctx context.Context, target string) (tg.InputPeerCl
 	return resolveTarget(ctx, api, target)
 }
 
-func resolveTarget(_ context.Context, _ *tg.Client, target string) (tg.InputPeerClass, error) {
+func resolveTarget(ctx context.Context, api *tg.Client, target string) (tg.InputPeerClass, error) {
 	target = strings.TrimSpace(target)
 	if target == "" { return nil, errors.New("storage chat ID is empty") }
 	id, err := strconv.ParseInt(target, 10, 64)
 	if err != nil || id >= 0 { return nil, fmt.Errorf("invalid Telegram Bot API chat ID %q: expected a negative numeric ID", target) }
 
-	// Telegram explicitly disallows messages.getDialogs for bot accounts
-	// (BOT_METHOD_INVALID). Bot API chat IDs encode the peer type; bots must
-	// use access_hash=0 when constructing an InputPeerChannel if no full
-	// access hash is available. Telegram validates membership and write
-	// permissions when the uploader sends the first message.
-	if id <= -1000000000001 {
-		channelID := -id - 1000000000000
-		if channelID <= 0 || channelID > 997852516352 {
-			return nil, fmt.Errorf("invalid Telegram channel ID in chat ID %q", target)
+	if id > -1000000000000 {
+		chatID := -id
+		if chatID <= 0 || chatID > 2147483647 {
+			return nil, fmt.Errorf("invalid basic group ID in chat ID %q", target)
 		}
-		return &tg.InputPeerChannel{ChannelID:int64(channelID), AccessHash:0}, nil
+		return &tg.InputPeerChat{ChatID:chatID}, nil
 	}
-	chatID := -id
-	if chatID <= 0 || chatID > 2147483647 {
-		return nil, fmt.Errorf("invalid basic group ID in chat ID %q", target)
+
+	channelID := -id - 1000000000000
+	if channelID <= 0 || channelID > 997852516352 {
+		return nil, fmt.Errorf("invalid Telegram channel ID in chat ID %q", target)
 	}
-	return &tg.InputPeerChat{ChatID:int64(chatID)}, nil
+	if api == nil { return nil, errors.New("MTProto API is required to resolve a channel destination") }
+
+	// messages.getDialogs is users-only. channels.getChannels supports bots:
+	// query with a zero access hash, then use the Channel constructor returned
+	// by Telegram (not a fabricated InputPeerChannel) for subsequent RPCs.
+	result, err := api.ChannelsGetChannels(ctx, []tg.InputChannelClass{
+		&tg.InputChannel{ChannelID:channelID, AccessHash:0},
+	})
+	if err != nil { return nil, fmt.Errorf("resolve channel %d with uploader bot: %w", channelID, err) }
+
+	var chats []tg.ChatClass
+	switch value := result.(type) {
+	case *tg.MessagesChats: chats = value.Chats
+	case *tg.MessagesChatsSlice: chats = value.Chats
+	default: return nil, fmt.Errorf("unsupported channels.getChannels response %T", result)
+	}
+	peer, err := channelPeerFromChats(chats, channelID)
+	if err != nil { return nil, fmt.Errorf("resolve channel %d with uploader bot: %w", channelID, err) }
+	return peer, nil
 }
 
+func channelPeerFromChats(chats []tg.ChatClass, channelID int64) (tg.InputPeerClass, error) {
+	for _, item := range chats {
+		if channel, ok := item.(*tg.Channel); ok && channel.ID == channelID {
+			return &tg.InputPeerChannel{ChannelID:channel.ID, AccessHash:channel.AccessHash}, nil
+		}
+	}
+	return nil, fmt.Errorf("Telegram did not return channel %d; verify the uploader bot is a member", channelID)
+}
 func captionOptions(caption string, entities []tg.MessageEntityClass) []styling.StyledTextOption {
 	if caption == "" { return nil }
 	if len(entities) == 0 { return []styling.StyledTextOption{styling.Plain(caption)} }
