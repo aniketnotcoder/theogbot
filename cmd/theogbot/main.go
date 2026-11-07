@@ -25,8 +25,8 @@ func main() {
 	app.SetTempDir(cfg.TempDir)
 
 	// Storage upload uses an independent bot-authenticated MTProto client.
-	// It is optional until STORAGE_TARGET is configured.
-	if cfg.StorageTarget != "" {
+	// Start it even without a shared target: /setstorage assigns destinations per user.
+	{
 		store, err := storage.New(cfg.APIID, cfg.APIHash, cfg.BotToken, cfg.StorageTarget)
 		if err != nil { logger.Error("storage configuration error", "error", err); os.Exit(1) }
 		app.SetStorage(store)

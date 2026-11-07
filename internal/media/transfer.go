@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"path"
 	"strings"
 
 	"github.com/gotd/td/telegram/downloader"
@@ -17,6 +18,7 @@ var ErrProtectedMessage = errors.New("Telegram marks this message as protected (
 
 type Downloaded struct {
 	Path, Name, MIME, Kind, Caption string
+	GroupedID int64
 	Size int64
 	Attributes []tg.DocumentAttributeClass
 }
@@ -34,12 +36,15 @@ func DownloadMessage(ctx context.Context, api *tg.Client, elem messages.Elem, te
 	if !ok { return nil, errors.New("message has no photo or document attachment") }
 
 	kind := "document"
+	var groupedID int64
+	if msg.GroupedID != 0 { groupedID = msg.GroupedID }
 	var attributes []tg.DocumentAttributeClass
 	if _, isPhoto := elem.Photo(); isPhoto {
 		kind = "photo"
 	} else if doc, isDocument := elem.Document(); isDocument {
 		if doc.Size > MaxDownloadBytes { return nil, fmt.Errorf("media is larger than the configured %d-byte limit", MaxDownloadBytes) }
 		attributes = append(attributes, doc.Attributes...)
+		for _, attr := range doc.Attributes { if _, ok := attr.(*tg.DocumentAttributeVideo); ok { kind = "video"; break } }
 	}
 
 	if strings.TrimSpace(tempDir) == "" { tempDir = os.TempDir() }
@@ -57,9 +62,16 @@ func DownloadMessage(ctx context.Context, api *tg.Client, elem messages.Elem, te
 	if info.Size() == 0 { return nil, errors.New("Telegram returned an empty media file") }
 	if info.Size() > MaxDownloadBytes { return nil, fmt.Errorf("download exceeded the configured %d-byte limit", MaxDownloadBytes) }
 
-	name := filepath.Base(strings.TrimSpace(file.Name))
-	if name == "." || name == string(filepath.Separator) || name == "" { name = "telegram-file" }
-	return &Downloaded{Path:path, Name:name, MIME:file.MIMEType, Size:info.Size(), Kind:kind, Caption:msg.Message, Attributes:attributes}, nil
+	name := safeFilename(file.Name)
+	return &Downloaded{Path:path, Name:name, MIME:file.MIMEType, Size:info.Size(), Kind:kind, Caption:msg.Message, Attributes:attributes, GroupedID:groupedID}, nil
+}
+
+func safeFilename(raw string) string {
+	name := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	name = path.Base(name)
+	name = strings.Map(func(r rune) rune { if r == 0 || r < 32 || r == 127 { return -1 }; return r }, name)
+	if name == "" || name == "." || name == ".." || name == "/" { return "telegram-file" }
+	return filepath.Base(name)
 }
 
 func (d *Downloaded) Cleanup() error {

@@ -23,10 +23,11 @@ The destination bot session is distinct from every user's source session. Do not
 ### Phase 2 — message transfer semantics
 - Use the repository's pinned gotd/td v0.130.0 API.
 - Extract media metadata and download locations from supported message types.
+- Preserve consecutive source album groups (photos/videos sharing Telegram grouped_id) as destination media groups of up to 10 items.
 - Download to temporary disk with cancellation, size limits, cleanup, and byte-progress callbacks.
 - Upload with gotd's MTProto uploader from the bot-authenticated client.
 - Preserve filename, MIME type, video/audio attributes, and caption where available.
-- Unit-test metadata mapping, safe temporary filenames, size guards, and cleanup.
+- Unit-test metadata mapping, safe temporary filenames, album grouping/count limits, size guards, and cleanup.
 - Record Telegram retrieval errors accurately. Do not attempt to defeat Telegram content-protection controls.
 
 **Gate:** a permitted test file can be downloaded by the source account and uploaded by the bot into the configured storage chat, with the resulting message identified.
@@ -55,7 +56,7 @@ The destination bot session is distinct from every user's source session. Do not
 
 ## Current baseline (2026-11-06)
 
-The current branch uses the authenticated user MTProto account for source retrieval and an independent bot-authenticated MTProto uploader for destination posts. /batch retrieves exact supplied IDs through messages.getMessages / channels.getMessages and preserves input order. /copy uses paginated history. Per-user destination setup is being added through /setstorage by forwarding a message from the destination; destination selections are currently memory-only.
+The current branch uses the authenticated user MTProto account for source retrieval and an independent bot-authenticated MTProto uploader for destination posts. /batch retrieves exact supplied IDs through messages.getMessages / channels.getMessages and preserves input order. /copy uses paginated history. Per-user destination setup is available through /setstorage by forwarding a message from the destination; destination selections are currently memory-only. The uploader client now starts without a shared STORAGE_TARGET so per-user destination selection works on a clean deployment. Consecutive photo/video messages sharing Telegram grouped_id are uploaded as a single media group when all members can be downloaded.
 
 Latest main CI: successful Go CI run #24 at commit 46f7cc5a12f596a7b547cc14cf6678856ed79074.
 

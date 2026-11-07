@@ -29,3 +29,17 @@ func TestDownloadLimitIsBounded(t *testing.T) {
 		t.Fatalf("unexpected download limit: %d", MaxDownloadBytes)
 	}
 }
+
+func TestSafeFilename(t *testing.T) {
+	cases := map[string]string{
+		"../../secret.txt": "secret.txt",
+		`C:\private\video.mp4`: "video.mp4",
+		"": "telegram-file",
+		"..": "telegram-file",
+		"folder/": "folder",
+		"  report.pdf  ": "report.pdf",
+	}
+	for input, want := range cases {
+		if got := safeFilename(input); got != want { t.Errorf("safeFilename(%q) = %q, want %q", input, got, want) }
+	}
+}

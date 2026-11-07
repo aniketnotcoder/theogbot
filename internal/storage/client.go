@@ -106,6 +106,43 @@ func (c *Client) UploadPathTo(ctx context.Context, destination tg.InputPeerClass
 	return s.Resolve(c.target).Media(ctx, doc)
 }
 
+type AlbumItem struct {
+	Path, Filename, MIME, Kind, Caption string
+	Attributes []tg.DocumentAttributeClass
+}
+
+// UploadAlbumTo uploads a Telegram media group (2-10 photos/videos) and sends it
+// as one grouped message. Other document types must use UploadPathTo individually.
+func (c *Client) UploadAlbumTo(ctx context.Context, destination tg.InputPeerClass, items []AlbumItem) (tg.UpdatesClass, error) {
+	if len(items) < 2 || len(items) > 10 { return nil, fmt.Errorf("album must contain between 2 and 10 items") }
+	if err := c.Ready(ctx); err != nil { return nil, err }
+	c.mu.RLock()
+	s, u, configuredPeer := c.sender, c.uploader, c.targetPeer
+	peer := destination
+	if peer == nil { peer = configuredPeer }
+	c.mu.RUnlock()
+	if peer == nil && strings.TrimSpace(c.target) == "" { return nil, errors.New("album destination is required") }
+	options := make([]message.MultiMediaOption, 0, len(items))
+	for i, item := range items {
+		if item.Kind != "photo" && item.Kind != "video" { return nil, fmt.Errorf("album item %d has unsupported kind %q; only photos and videos can be grouped", i+1, item.Kind) }
+		file, err := u.FromPath(ctx, item.Path)
+		if err != nil { return nil, fmt.Errorf("upload album item %d: %w", i+1, err) }
+		caption := []styling.StyledTextOption{}
+		if item.Caption != "" { caption = append(caption, styling.Plain(item.Caption)) }
+		var option message.MediaOption
+		if item.Kind == "photo" {
+			option = message.UploadedPhoto(file, caption...)
+		} else {
+			preserved := make([]tg.DocumentAttributeClass, 0, len(item.Attributes))
+			for _, attr := range item.Attributes { if _, isFilename := attr.(*tg.DocumentAttributeFilename); !isFilename { preserved = append(preserved, attr) } }
+			option = message.UploadedDocument(file, caption...).Filename(item.Filename).MIME(item.MIME).Attributes(preserved...)
+		}
+		options = append(options, message.ForceMulti(option))
+	}
+	builder := s.To(peer)
+	return builder.Album(ctx, options[0], options[1:]...)
+}
+
 func (c *Client) SendText(ctx context.Context, text string) (tg.UpdatesClass, error) {
 	return c.SendTextTo(ctx, nil, text)
 }
@@ -119,6 +156,7 @@ func (c *Client) SendTextTo(ctx context.Context, destination tg.InputPeerClass, 
 	if peer == nil { peer = configuredPeer }
 	c.mu.RUnlock()
 	if peer != nil { return s.To(peer).Text(ctx, text) }
+	if strings.TrimSpace(c.target) == "" { return nil, errors.New("text destination is required") }
 	return s.Resolve(c.target).Text(ctx, text)
 }
 

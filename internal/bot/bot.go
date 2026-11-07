@@ -44,16 +44,12 @@ type update struct {
 	UpdateID int64 `json:"update_id"`
 	Message *incomingMessage `json:"message"`
 }
-type forwardedChat struct { ID int64 `json:"id"`; Title string `json:"title"`; Username string `json:"username"` }
-type forwardOrigin struct { Type string `json:"type"`; Chat *forwardedChat `json:"chat"`; SenderChat *forwardedChat `json:"sender_chat"` }
-func (o *forwardOrigin) sourceChat() *forwardedChat { if o == nil { return nil }; if o.Chat != nil { return o.Chat }; return o.SenderChat }
-
 type incomingMessage struct {
 	MessageID int64 `json:"message_id"`
 	Text string `json:"text"`
 	Chat struct { ID int64 `json:"id"`; Type string `json:"type"` } `json:"chat"`
 	From struct { ID int64 `json:"id"` } `json:"from"`
-	ForwardOrigin *forwardOrigin `json:"forward_origin"`
+	ForwardOrigin *struct { Type string `json:"type"`; Chat *struct { ID int64 `json:"id"`; Title string `json:"title"`; Username string `json:"username"` } `json:"chat"`; SenderChat *struct { ID int64 `json:"id"`; Title string `json:"title"`; Username string `json:"username"` } `json:"sender_chat"` } `json:"forward_origin"`
 }
 type destination struct { ChatID int64; Title string; Username string }
 type botIdentity struct { Username string `json:"username"` }
@@ -161,7 +157,7 @@ func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limi
 
 func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client, source tg.InputPeerClass, chatID int64, ids []int, label string) {
 	if b.storage == nil {
-		_ = b.sendMessage(ctx, chatID, "Storage uploader is not configured. Set STORAGE_TARGET and restart.")
+		_ = b.sendMessage(ctx, chatID, "Storage uploader is not configured.")
 		return
 	}
 	if err := b.storage.Ready(ctx); err != nil {
@@ -172,53 +168,95 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 	if !ok { _ = b.sendMessage(ctx, chatID, "Set your destination first: send /setstorage, then forward a message from your destination group/channel."); return }
 	destinationPeer, err := b.storage.ResolvePeer(ctx, strconv.FormatInt(d.ChatID,10))
 	if err != nil { _ = b.sendMessage(ctx, chatID, "Your destination is not accessible to the uploader bot: "+err.Error()+". Add the configured uploader bot with posting permission, then run /setstorage again."); return }
-	if len(ids) == 0 {
-		_ = b.sendMessage(ctx, chatID, label+": no messages to transfer.")
-		return
-	}
+	if len(ids) == 0 { _ = b.sendMessage(ctx, chatID, label+": no messages to transfer."); return }
 	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s started: %d messages. Mode: download → upload.", label, len(ids)))
 	elements, err := forward.FetchMessagesByID(ctx, api, source, ids)
-	if err != nil {
-		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s could not retrieve the exact requested posts: %v", label, err))
-		return
-	}
-	found := make(map[int]messages.Elem, len(elements))
-	for _, elem := range elements { found[elem.Msg.GetID()] = elem }
-	done, failed, skipped := 0,0,0
-	for i,id := range ids {
+	if err != nil { _ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s could not retrieve the exact requested posts: %v", label, err)); return }
+
+	done, failed, skipped := 0, 0, 0
+	for i := 0; i < len(ids); {
 		if err := ctx.Err(); err != nil {
-			_ = b.sendMessage(context.Background(),chatID,fmt.Sprintf("%s cancelled after %d/%d (failed %d, skipped %d).",label,done,len(ids),failed,skipped))
+			_ = b.sendMessage(context.Background(), chatID, fmt.Sprintf("%s cancelled after %d/%d (failed %d, skipped %d).", label, done, len(ids), failed, skipped))
 			return
 		}
-		elem := found[id]
-		downloaded, err := media.DownloadMessage(ctx,api,elem,b.tempDir)
-		if err != nil {
+
+		// Telegram albums arrive as adjacent messages sharing grouped_id. Keep
+		// the caller's order and only combine consecutive selected album members.
+		groupLen := albumGroupLength(elements, i)
+		if groupLen > 1 {
+			downloads := make([]*media.Downloaded, 0, groupLen)
+			albumReady := true
+			for j := 0; j < groupLen; j++ {
+				item, downloadErr := media.DownloadMessage(ctx, api, elements[i+j], b.tempDir)
+				if downloadErr != nil { albumReady = false; break }
+				if item.Kind != "photo" && item.Kind != "video" { _ = item.Cleanup(); albumReady = false; break }
+				downloads = append(downloads, item)
+			}
+			if albumReady && len(downloads) == groupLen {
+				items := make([]storage.AlbumItem, 0, groupLen)
+				for _, item := range downloads {
+					items = append(items, storage.AlbumItem{Path:item.Path, Filename:item.Name, MIME:item.MIME, Kind:item.Kind, Caption:item.Caption, Attributes:item.Attributes})
+				}
+				_, uploadErr := b.storage.UploadAlbumTo(ctx, destinationPeer, items)
+				for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
+				if uploadErr != nil {
+					failed += groupLen
+					_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s album [%d-%d/%d] upload failed: %v", label, i+1, i+groupLen, len(ids), uploadErr))
+				} else {
+					done += groupLen
+				}
+				_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).", label, done, len(ids), failed, skipped))
+				i += groupLen
+				continue
+			}
+			for _, item := range downloads { _ = item.Cleanup() }
+			// If the source album contains an unsupported item or one member could
+			// not be downloaded, retry its messages individually below.
+		}
+
+		elem := elements[i]
+		id := ids[i]
+		downloaded, downloadErr := media.DownloadMessage(ctx, api, elem, b.tempDir)
+		if downloadErr != nil {
 			if msg, ok := elem.Msg.(*tg.Message); ok && strings.TrimSpace(msg.Message) != "" && msg.Media == nil {
 				if _, textErr := b.storage.SendTextTo(ctx, destinationPeer, msg.Message); textErr != nil {
 					failed++
-					_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] text upload failed for message %d: %v",label,i+1,len(ids),id,textErr))
-				} else {
-					done++
-					_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).",label,done,len(ids),failed,skipped))
-				}
-				continue
+					_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] text upload failed for message %d: %v", label, i+1, len(ids), id, textErr))
+				} else { done++ }
+			} else {
+				skipped++
+				_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] skipped message %d: %v", label, i+1, len(ids), id, downloadErr))
 			}
-			skipped++
-			_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] skipped message %d: %v",label,i+1,len(ids),id,err))
+			i++
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).", label, done, len(ids), failed, skipped))
 			continue
 		}
-		_, uploadErr := b.storage.UploadPathTo(ctx,destinationPeer,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes)
+		_, uploadErr := b.storage.UploadPathTo(ctx, destinationPeer, downloaded.Path, downloaded.Name, downloaded.MIME, downloaded.Caption, downloaded.Kind, downloaded.Attributes)
 		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
 			failed++
-			_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s [%d/%d] upload failed for message %d: %v",label,i+1,len(ids),id,uploadErr))
-			continue
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] upload failed for message %d: %v", label, i+1, len(ids), id, uploadErr))
+		} else {
+			if cleanupErr != nil { b.log.Warn("temporary file cleanup failed", "path", downloaded.Path, "error", cleanupErr) }
+			done++
 		}
-		if cleanupErr != nil { b.log.Warn("temporary file cleanup failed","path",downloaded.Path,"error",cleanupErr) }
-		done++
-		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).",label,done,len(ids),failed,skipped))
+		i++
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).", label, done, len(ids), failed, skipped))
 	}
-	_ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s finished. Uploaded: %d, failed: %d, skipped: %d, requested: %d.",label,done,failed,skipped,len(ids)))
+	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s finished. Uploaded: %d, failed: %d, skipped: %d, requested: %d.", label, done, failed, skipped, len(ids)))
+}
+
+func albumGroupLength(elements []messages.Elem, start int) int {
+	if start < 0 || start >= len(elements) { return 1 }
+	first, ok := elements[start].Msg.(*tg.Message)
+	if !ok || first.GroupedID == 0 { return 1 }
+	count := 1
+	for i := start+1; i < len(elements) && count < 10; i++ {
+		msg, ok := elements[i].Msg.(*tg.Message)
+		if !ok || msg.GroupedID != first.GroupedID { break }
+		count++
+	}
+	return count
 }
 
 func parseChatLink(raw string)(string,int64,error){
@@ -258,12 +296,13 @@ func (b *Bot) getDestination(userID int64) (destination, bool) {
 func (b *Bot) captureForwardedDestination(ctx context.Context, msg *incomingMessage) bool {
 	b.destMu.Lock()
 	pending := b.awaitingDestination[msg.From.ID]
-	if pending && msg.ForwardOrigin != nil && msg.ForwardOrigin.sourceChat() != nil { delete(b.awaitingDestination, msg.From.ID) }
+	if pending && msg.ForwardOrigin != nil && (msg.ForwardOrigin.Chat != nil || msg.ForwardOrigin.SenderChat != nil) { delete(b.awaitingDestination, msg.From.ID) }
 	b.destMu.Unlock()
-	if !pending || msg.ForwardOrigin == nil || msg.ForwardOrigin.sourceChat() == nil { return false }
+	if !pending || msg.ForwardOrigin == nil || (msg.ForwardOrigin.Chat == nil && msg.ForwardOrigin.SenderChat == nil) { return false }
 	if msg.Chat.Type != "private" { _ = b.sendMessage(ctx,msg.Chat.ID,"Please forward the destination message in a private chat with this bot."); return true }
 	origin := msg.ForwardOrigin
-	forwardedChat := origin.sourceChat()
+	forwardedChat := origin.Chat
+	if forwardedChat == nil { forwardedChat = origin.SenderChat }
 	if origin.Type != "chat" && origin.Type != "channel" { _ = b.sendMessage(ctx,msg.Chat.ID,"Please forward a message from a group or channel, not a user or hidden source."); return true }
 	if forwardedChat == nil || forwardedChat.ID >= 0 { _ = b.sendMessage(ctx,msg.Chat.ID,"That forwarded message does not identify a group/channel destination."); return true }
 	if b.storage == nil { _ = b.sendMessage(ctx,msg.Chat.ID,"Uploader is not configured."); return true }

@@ -1,6 +1,6 @@
 package bot
 
-import ("testing"; "encoding/json")
+import ("testing"; "encoding/json"; "github.com/gotd/td/telegram/query/messages"; "github.com/gotd/td/tg")
 
 func TestParseChatLink(t *testing.T) {
 	tests := []struct {
@@ -55,4 +55,16 @@ func TestDestinationIsIsolatedPerUser(t *testing.T) {
 	second, ok := b.getDestination(22)
 	if !ok || second.ChatID != -100222 { t.Fatalf("second destination = %+v, %v", second, ok) }
 	if _, ok := b.getDestination(33); ok { t.Fatal("unexpected destination for unconfigured user") }
+}
+
+func TestAlbumGroupLengthUsesOnlyAdjacentSameGroupMessages(t *testing.T) {
+	items := []messages.Elem{
+		{Msg:&tg.Message{ID:1,GroupedID:77}},
+		{Msg:&tg.Message{ID:2,GroupedID:77}},
+		{Msg:&tg.Message{ID:3,GroupedID:77}},
+		{Msg:&tg.Message{ID:4,GroupedID:88}},
+	}
+	if got := albumGroupLength(items,0); got != 3 { t.Fatalf("group length = %d, want 3",got) }
+	if got := albumGroupLength(items,2); got != 1 { t.Fatalf("group length at next album = %d, want 1",got) }
+	if got := albumGroupLength(items,3); got != 1 { t.Fatalf("group length for singleton = %d, want 1",got) }
 }

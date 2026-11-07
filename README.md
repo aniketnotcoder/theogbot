@@ -37,8 +37,8 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 ## Transfer behavior and limitations
 
 - Source access uses the user's own MTProto session; destination upload uses a separate bot-authenticated MTProto client.
-- The transfer pipeline downloads supported media to temporary disk and uploads it as a new message. Text-only messages are sent as text; photos are uploaded as photos; documents retain their filename, MIME type, video/audio/sticker attributes and caption text where Telegram exposes them.
-- Media downloads are capped at 2 GiB per item. Unsupported/service messages are reported as skipped rather than counted as uploads. Caption entities, thumbnails and album grouping are not yet preserved.
+- The transfer pipeline downloads supported media to temporary disk and uploads it as new messages. Text-only messages are sent as text; photos are uploaded as photos; documents retain their filename, MIME type, video/audio/sticker attributes and caption text where Telegram exposes them. Consecutive photo/video posts from the same source album are uploaded as one destination media group (up to Telegram's 10-item album limit) when every selected member is available.
+- Media downloads are capped at 2 GiB per item. Unsupported/service messages are reported as skipped rather than counted as uploads. Caption entity formatting and source thumbnails are not yet preserved. Album grouping is preserved for consecutive selected photos/videos; unsupported or incomplete album members fall back to individual transfers.
 - Messages explicitly marked as protected are not downloaded. Telegram's API response is authoritative; the bot does not claim to override Telegram restrictions.
 - Source sessions and per-user destinations are memory-only and are lost when Railway restarts or redeploys; users must log in again and configure `/setstorage` again.
 - Temporary files use Railway's ephemeral filesystem. Ensure adequate free space for the largest file being transferred.
