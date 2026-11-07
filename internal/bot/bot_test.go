@@ -1,6 +1,6 @@
 package bot
 
-import ("testing"; "encoding/json"; "github.com/gotd/td/telegram/query/messages"; "github.com/gotd/td/tg")
+import ("testing"; "encoding/json"; "strings"; "time"; "github.com/gotd/td/telegram/query/messages"; "github.com/gotd/td/tg")
 
 func TestParseChatLink(t *testing.T) {
 	tests := []struct {
@@ -67,4 +67,16 @@ func TestAlbumGroupLengthUsesOnlyAdjacentSameGroupMessages(t *testing.T) {
 	if got := albumGroupLength(items,0); got != 3 { t.Fatalf("group length = %d, want 3",got) }
 	if got := albumGroupLength(items,2); got != 1 { t.Fatalf("group length at next album = %d, want 1",got) }
 	if got := albumGroupLength(items,3); got != 1 { t.Fatalf("group length for singleton = %d, want 1",got) }
+}
+
+func TestFormatProgressShowsCountsStageAndETA(t *testing.T) {
+	got := formatProgress("Batch","Uploading",3,4,1,1,0,10*time.Second)
+	for _, want := range []string{"Batch · 50%","Stage: Uploading","Item: 3/4","Uploaded: 1 · Failed: 1 · Skipped: 0","Elapsed: 10s","ETA: 10s"} {
+		if !strings.Contains(got,want) { t.Errorf("progress text %q does not contain %q",got,want) }
+	}
+}
+
+func TestFormatProgressCompletesAtHundredPercent(t *testing.T) {
+	got := formatProgress("Copy","Finished",4,4,3,1,0,12*time.Second)
+	if !strings.Contains(got,"Copy · 100%") || !strings.Contains(got,"ETA: 0s") { t.Fatalf("unexpected completed progress: %s",got) }
 }

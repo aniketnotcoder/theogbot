@@ -57,6 +57,34 @@ type incomingMessage struct {
 }
 type destination struct { ChatID int64; Title string; Username string }
 type botIdentity struct { Username string `json:"username"` }
+type sentMessage struct { MessageID int64 `json:"message_id"` }
+
+type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; last time.Time }
+
+func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total int) (*progressReporter, error) {
+	var sent sentMessage
+	if err := b.call(ctx, "sendMessage", url.Values{"chat_id":{strconv.FormatInt(chatID,10)}, "text":{fmt.Sprintf("%s: preparing %d messages…", label,total)}}, &sent); err != nil { return nil, err }
+	return &progressReporter{bot:b,chatID:chatID,messageID:sent.MessageID,label:label,total:total,started:time.Now()},nil
+}
+
+func formatProgress(label, stage string, current, total, done, failed, skipped int, elapsed time.Duration) string {
+	processed := done+failed+skipped
+	percent := 0
+	if total > 0 { percent = processed*100/total }
+	eta := "calculating…"
+	if processed > 0 && total > processed { remaining := time.Duration(float64(elapsed)*float64(total-processed)/float64(processed)); eta = remaining.Round(time.Second).String() } else if processed >= total { eta = "0s" }
+	return fmt.Sprintf("%s · %d%%\nStage: %s\nItem: %d/%d\nUploaded: %d · Failed: %d · Skipped: %d\nElapsed: %s · ETA: %s",label,percent,stage,current,total,done,failed,skipped,elapsed.Round(time.Second),eta)
+}
+
+func (p *progressReporter) update(ctx context.Context, stage string, current, done, failed, skipped int, force bool) {
+	if p == nil || p.messageID == 0 { return }
+	now := time.Now()
+	if !force && now.Sub(p.last) < 900*time.Millisecond { return }
+	p.last = now
+	text := formatProgress(p.label,stage,current,p.total,done,failed,skipped,now.Sub(p.started))
+	values := url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text}}
+	if err := p.bot.call(ctx,"editMessageText",values,nil); err != nil { p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err) }
+}
 type apiResponse[T any] struct {
 	OK bool `json:"ok"`
 	Description string `json:"description"`
@@ -173,13 +201,16 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 	destinationPeer, err := b.storage.ResolvePeer(ctx, strconv.FormatInt(d.ChatID,10))
 	if err != nil { _ = b.sendMessage(ctx, chatID, "Your destination is not accessible to the uploader bot: "+err.Error()+". Add the configured uploader bot with posting permission, then run /setstorage again."); return }
 	if len(ids) == 0 { _ = b.sendMessage(ctx, chatID, label+": no messages to transfer."); return }
-	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s started: %d messages. Mode: download → upload.", label, len(ids)))
+	progress, progressErr := b.newProgress(ctx, chatID, label, len(ids))
+	if progressErr != nil { _ = b.sendMessage(ctx,chatID,fmt.Sprintf("%s started: %d messages, but progress reporting could not start: %v",label,len(ids),progressErr)) } else { progress.update(ctx,"Retrieving source messages",1,0,0,0,true) }
 	elements, err := forward.FetchMessagesByID(ctx, api, source, ids)
-	if err != nil { _ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s could not retrieve the exact requested posts: %v", label, err)); return }
+	if err != nil { if progress != nil { progress.update(ctx,"Failed to retrieve source messages",1,0,1,0,true) }; _ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s could not retrieve the exact requested posts: %v", label, err)); return }
 
 	done, failed, skipped := 0, 0, 0
+	if progress != nil { progress.update(ctx,"Ready",1,done,failed,skipped,true) }
 	for i := 0; i < len(ids); {
 		if err := ctx.Err(); err != nil {
+			if progress != nil { progress.update(context.Background(),"Cancelled",i+1,done,failed,skipped,true) }
 			_ = b.sendMessage(context.Background(), chatID, fmt.Sprintf("%s cancelled after %d/%d (failed %d, skipped %d).", label, done, len(ids), failed, skipped))
 			return
 		}
@@ -187,6 +218,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 		// Telegram albums arrive as adjacent messages sharing grouped_id. Keep
 		// the caller's order and only combine consecutive selected album members.
 		groupLen := albumGroupLength(elements, i)
+		if progress != nil { progress.update(ctx,"Downloading album",i+1,done,failed,skipped,false) }
 		if groupLen > 1 {
 			downloads := make([]*media.Downloaded, 0, groupLen)
 			albumReady := true
@@ -201,6 +233,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 				for _, item := range downloads {
 					items = append(items, storage.AlbumItem{Path:item.Path, Filename:item.Name, MIME:item.MIME, Kind:item.Kind, Caption:item.Caption, Attributes:item.Attributes, Entities:item.Entities})
 				}
+				if progress != nil { progress.update(ctx,"Uploading album",i+1,done,failed,skipped,false) }
 				_, uploadErr := b.storage.UploadAlbumTo(ctx, destinationPeer, items)
 				for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
 				if uploadErr != nil {
@@ -209,7 +242,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 				} else {
 					done += groupLen
 				}
-				_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).", label, done, len(ids), failed, skipped))
+				if progress != nil { progress.update(ctx,"Transferring",i,done,failed,skipped,false) }
 				i += groupLen
 				continue
 			}
@@ -220,6 +253,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 
 		elem := elements[i]
 		id := ids[i]
+		if progress != nil { progress.update(ctx,"Downloading",i+1,done,failed,skipped,false) }
 		downloaded, downloadErr := media.DownloadMessage(ctx, api, elem, b.tempDir)
 		if downloadErr != nil {
 			if msg, ok := elem.Msg.(*tg.Message); ok && strings.TrimSpace(msg.Message) != "" && msg.Media == nil {
@@ -235,6 +269,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).", label, done, len(ids), failed, skipped))
 			continue
 		}
+		if progress != nil { progress.update(ctx,"Uploading",i+1,done,failed,skipped,false) }
 		_, uploadErr := b.storage.UploadPathTo(ctx, destinationPeer, downloaded.Path, downloaded.Name, downloaded.MIME, downloaded.Caption, downloaded.Kind, downloaded.Attributes, downloaded.Entities)
 		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
@@ -247,6 +282,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 		i++
 		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).", label, done, len(ids), failed, skipped))
 	}
+	if progress != nil { progress.update(ctx,"Finished",len(ids),done,failed,skipped,true) }
 	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s finished. Uploaded: %d, failed: %d, skipped: %d, requested: %d.", label, done, failed, skipped, len(ids)))
 }
 

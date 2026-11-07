@@ -42,7 +42,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 - Messages explicitly marked as protected are not downloaded. Telegram's API response is authoritative; the bot does not claim to override Telegram restrictions.
 - Source sessions and per-user destinations are memory-only and are lost when Railway restarts or redeploys; users must log in again and configure `/setstorage` again.
 - Temporary files use Railway's ephemeral filesystem. Ensure adequate free space for the largest file being transferred.
-- Transfers are sequential per user. `/cancel` requests safe cancellation.
+- Transfers are sequential per user. `/cancel` requests safe cancellation. A single edited progress message reports the current stage, item position, elapsed time, estimated remaining time, and uploaded/failed/skipped totals.
 
 ## Development
 

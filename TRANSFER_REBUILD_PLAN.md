@@ -42,7 +42,7 @@ The destination bot session is distinct from every user's source session. Do not
 **Gate:** multi-message test with text-only, photo, document, and video messages; correct order and no silent skips.
 
 ### Phase 4 — live progress and controls
-- Show current item, stage, bytes, percentage, speed, ETA, completed/failed counts.
+- Show current item, stage, percentage, ETA, elapsed time, and completed/failed/skipped counts in one edited progress message. Byte-level progress and transfer speed remain a follow-up enhancement.
 - Edit one progress message with throttling to avoid excessive API calls.
 - Add cancellation and bounded queue/concurrency.
 
@@ -57,7 +57,7 @@ The destination bot session is distinct from every user's source session. Do not
 
 ## Current baseline (2026-11-06)
 
-The current branch uses the authenticated user MTProto account for source retrieval and an independent bot-authenticated MTProto uploader for destination posts. /batch retrieves exact supplied IDs through messages.getMessages / channels.getMessages and preserves input order. /copy uses paginated history. Per-user destination setup is available through /setstorage by forwarding a message from the destination; destination selections are currently memory-only. The uploader client now starts without a shared STORAGE_TARGET so per-user destination selection works on a clean deployment. Consecutive photo/video messages sharing Telegram grouped_id are uploaded as a single media group when all members can be downloaded.
+The current branch uses the authenticated user MTProto account for source retrieval and an independent bot-authenticated MTProto uploader for destination posts. /batch retrieves exact supplied IDs through messages.getMessages / channels.getMessages and preserves input order. /copy uses paginated history. Per-user destination setup is available through /setstorage by forwarding a message from the destination; destination selections are currently memory-only. The uploader client now starts without a shared STORAGE_TARGET so per-user destination selection works on a clean deployment. Consecutive photo/video messages sharing Telegram grouped_id are uploaded as a single media group when all members can be downloaded. Common caption formatting entities are preserved using Telegram UTF-16 offsets. Transfer jobs now create and edit one progress message with stage, item position, elapsed time, estimated remaining time, and uploaded/failed/skipped totals.
 
 Latest main CI: successful Go CI run #24 at commit 46f7cc5a12f596a7b547cc14cf6678856ed79074.
 
