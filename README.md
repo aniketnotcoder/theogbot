@@ -28,11 +28,11 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 
 1. Create a bot with @BotFather and set `BOT_TOKEN`.
 2. Open the bot and send `/start`. Use the inline **Connect account** button, then reply to each private login prompt in sequence. Verification codes and 2-step passwords are deleted from the chat after submission.
-2. Get `API_ID` and `API_HASH` from https://my.telegram.org/apps.
+3. Get `API_ID` and `API_HASH` from https://my.telegram.org/apps.
 3. Create or choose a private storage group/channel.
 4. Add the exact bot whose token is configured in `BOT_TOKEN` to that destination. Give it permission to send media (and post messages for channels).
 5. In a private chat with TheOGBot, send `/setstorage` and forward a message from your destination group/channel. The destination is stored per user in memory. The uploader bot must already be a member.
-6. The source account that invokes transfers separately logs in with `/login` and must already be able to access the source chat.
+6. The source account that invokes transfers connects through the **Connect account** button (or `/login`) and must already be able to access the source chat.
 7. Keep credentials in Railway Variables, never in Git.
 
 **Identity matters:** the source user's membership does not grant the uploader bot access to the storage group. If another Telegram account created the storage group, that is fine; the configured uploader bot must still be added to it.

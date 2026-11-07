@@ -528,7 +528,7 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	_ = b.call(ctx,"answerCallbackQuery",url.Values{"callback_query_id":{q.ID}},nil)
 	if q.Message==nil{return}
 	chatID,userID:=q.Message.Chat.ID,q.From.ID
-	if q.Message.Chat.Type!="private" && strings.HasPrefix(q.Data,"login:"){_ = b.sendMessage(ctx,chatID,"Account login is only available in a private chat.");return}
+	if q.Message.Chat.Type!="private" { _ = b.sendMessage(ctx,chatID,"Open the bot's private chat and send /start to use these controls securely."); return }
 	switch q.Data {
 	case "login:start":
 		b.setPendingInput(userID,"phone")
