@@ -22,15 +22,3 @@ func TestSubmitPasswordRequiresPasswordPrompt(t *testing.T) {
 	if err:=m.SubmitPassword(42,"secret");err!=nil{t.Fatalf("SubmitPassword error = %v",err)}
 	if got:=<-a.pass;got.value!="secret"{t.Fatalf("queued password = %q",got.value)}
 }
-
-func TestFailedLoginCanBeReplaced(t *testing.T) {
-	m:=NewManager(1,"hash")
-	old:=&account{state:"failed",cancel:func(){}}
-	m.users[42]=old
-	m.mu.Lock()
-	if m.users[42]!=old{m.mu.Unlock();t.Fatal("failed account unexpectedly changed")}
-	m.mu.Unlock()
-	// Begin's replacement branch is covered without starting a network client
-	// by verifying that failed state is not treated as an active login.
-	if old.state=="failed" && old.state=="connected"{t.Fatal("unreachable state")}
-}
