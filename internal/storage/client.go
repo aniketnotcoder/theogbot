@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
@@ -29,6 +30,8 @@ type Client struct {
 	runErr error
 }
 
+const startupTimeout = 20 * time.Second
+
 func New(appID int, appHash, token, target string) (*Client, error) {
 	if appID <= 0 || appHash == "" || token == "" || target == "" {
 		return nil, errors.New("API_ID, API_HASH, BOT_TOKEN and STORAGE_TARGET are required")
@@ -39,17 +42,22 @@ func New(appID int, appHash, token, target string) (*Client, error) {
 func (c *Client) Run(ctx context.Context) error {
 	client := telegram.NewClient(c.appID, c.appHash, telegram.Options{SessionStorage:&session.StorageMemory{}, NoUpdates:true})
 	err := client.Run(ctx, func(clientCtx context.Context) error {
-		if _, err := client.Auth().Bot(clientCtx, c.token); err != nil { return fmt.Errorf("authenticate storage bot: %w", err) }
+		startupCtx, cancelStartup := context.WithTimeout(clientCtx, startupTimeout)
+		defer cancelStartup()
+
+		if _, err := client.Auth().Bot(startupCtx, c.token); err != nil {
+			return fmt.Errorf("authenticate storage bot: %w", err)
+		}
 		api := tg.NewClient(client)
 		u := uploader.NewUploader(api).WithThreads(4)
 		s := message.NewSender(api).WithUploader(u)
-		c.mu.Lock()
 		var peer tg.InputPeerClass
 		if strings.HasPrefix(strings.TrimSpace(c.target), "-") {
 			var resolveErr error
-			peer, resolveErr = resolveTarget(clientCtx, api, c.target)
+			peer, resolveErr = resolveTarget(startupCtx, api, c.target)
 			if resolveErr != nil { return fmt.Errorf("resolve STORAGE_TARGET: %w", resolveErr) }
 		}
+		c.mu.Lock()
 		c.api, c.sender, c.uploader, c.targetPeer = api, s, u, peer
 		c.mu.Unlock()
 		c.readyOnce.Do(func(){close(c.ready)})
@@ -89,7 +97,6 @@ func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption s
 	if peer != nil { return s.To(peer).Media(ctx, doc) }
 	return s.Resolve(c.target).Media(ctx, doc)
 }
-
 
 // resolveTarget supports public usernames and private groups/channels already
 // visible in the storage bot's dialogs. Numeric targets use Telegram's Bot API
