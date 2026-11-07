@@ -98,9 +98,9 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);password:=strings.TrimSpace(strings.TrimPrefix(text,fields[0]))
 		if password==""{reply="Usage: /password YOUR_2FA_PASSWORD"}else if err:=b.accounts.SubmitPassword(msg.From.ID,password);err!=nil{reply="Could not submit password: "+err.Error()}else{reply="2-step verification password submitted."}
 	case "/batch":
-		if len(fields)<2{reply="Usage: /batch https://t.me/channel/123 [https://t.me/channel/124]"}else if !b.startJob(msg.From.ID,ctx){reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(ctx,msg.From.ID,msg.Chat.ID,fields[1:])}();return}
+		if len(fields)<2{reply="Usage: /batch https://t.me/channel/123 [https://t.me/channel/124]"}else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,fields[1:])}();return}
 	case "/copy":
-		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=50000;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{if !b.startJob(msg.From.ID,ctx){reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(ctx,msg.From.ID,msg.Chat.ID,fields[1],limit)}();return}}}
+		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=50000;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(jobCtx,msg.From.ID,msg.Chat.ID,fields[1],limit)}();return}}}
 	case "/cancel":
 		if b.cancelJob(msg.From.ID){reply="Cancellation requested. The current operation will stop safely."}else{reply="No active transfer to cancel."}
 	case "/storage":
@@ -241,14 +241,13 @@ func (b *Bot) call(ctx context.Context,method string,values url.Values,out any)e
 	return nil
 }
 
-func (b *Bot) startJob(userID int64, parent context.Context) bool {
+func (b *Bot) startJob(userID int64, parent context.Context) (context.Context, bool) {
 	b.jobsMu.Lock()
 	defer b.jobsMu.Unlock()
-	if _, exists := b.jobs[userID]; exists { return false }
+	if _, exists := b.jobs[userID]; exists { return nil, false }
 	ctx, cancel := context.WithCancel(parent)
 	b.jobs[userID] = cancel
-	_ = ctx
-	return true
+	return ctx, true
 }
 
 func (b *Bot) finishJob(userID int64) {
