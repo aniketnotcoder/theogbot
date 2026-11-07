@@ -11,24 +11,27 @@ The destination bot session is distinct from every user's source session. Do not
 
 ## Phases and acceptance gates
 
-### Phase 1 — media transfer foundation
+### Phase 1 — identity and per-user destination setup
+- Keep Bot API control, personal MTProto source identity, and the separate uploader bot identity distinct.
+- Add `/setstorage`: the user forwards a message from a group/channel in a private chat; resolve that destination through the uploader bot's own dialogs.
+- Store the destination per user in memory and use it for that user's `/batch` and `/copy` jobs.
+- `/storage` reports the user's selected destination and whether the uploader bot can see it.
+- Require the uploader bot to be a member with posting rights; never infer access from the source user's membership.
+
+**Gate:** two users can select different destination chats, and the uploader identity can resolve each selected destination before transfer.
+
+### Phase 2 — message transfer semantics
 - Use the repository's pinned gotd/td v0.130.0 API.
 - Extract media metadata and download locations from supported message types.
+- Preserve consecutive source album groups (photos/videos sharing Telegram grouped_id) as destination media groups of up to 10 items.
 - Download to temporary disk with cancellation, size limits, cleanup, and byte-progress callbacks.
 - Upload with gotd's MTProto uploader from the bot-authenticated client.
 - Preserve filename, MIME type, video/audio attributes, and caption where available.
-- Unit-test metadata mapping, safe temporary filenames, size guards, and cleanup.
+- Preserve supported caption formatting entities using Telegram UTF-16 offsets; safely skip unsupported entity types.
+- Unit-test metadata mapping, safe temporary filenames, album grouping/count limits, UTF-16 caption offsets, size guards, and cleanup.
 - Record Telegram retrieval errors accurately. Do not attempt to defeat Telegram content-protection controls.
 
 **Gate:** a permitted test file can be downloaded by the source account and uploaded by the bot into the configured storage chat, with the resulting message identified.
-
-### Phase 2 — storage destination
-- Add STORAGE_CHAT_ID configuration.
-- Resolve the private destination from the bot account's dialogs and verify that the bot can post.
-- Add /storage status and clear setup diagnostics.
-- Return a t.me/c/<id>/<message_id> style link only when valid; otherwise provide a useful fallback.
-
-**Gate:** bot can post a small test file into the actual private storage group.
 
 ### Phase 3 — /batch and /copy on the media pipeline
 - Replace native forwarding as the primary path with download → upload.
@@ -39,24 +42,24 @@ The destination bot session is distinct from every user's source session. Do not
 **Gate:** multi-message test with text-only, photo, document, and video messages; correct order and no silent skips.
 
 ### Phase 4 — live progress and controls
-- Show current item, stage, bytes, percentage, speed, ETA, completed/failed counts.
+- Show current item, stage, live bytes, percentage, measured transfer speed, byte ETA, elapsed time, and completed/failed/skipped counts in one edited progress message.
 - Edit one progress message with throttling to avoid excessive API calls.
 - Add cancellation and bounded queue/concurrency.
 
-**Gate:** progress is accurate during download and upload; cancellation removes partial temporary files.
+**Gate:** CI run #56 passed `go test ./...` and `go build ./cmd/theogbot`. Live Railway validation remains: progress accuracy during real transfers and cancellation cleanup.
 
 ### Phase 5 — reliability and performance
-- Add flood-wait-aware retry for safe idempotent operations, bounded concurrency, disk-space checks, startup diagnostics, and structured logs.
+- Add flood-wait-aware retry for safe idempotent operations, bounded concurrency, disk-space checks, startup diagnostics, and structured logs. (Implementation complete; CI passed.)
 - Test large permitted files and failure cases on Railway.
 - Tune from measured timings; do not promise throughput without measurements.
 
-**Gate:** repeatable Railway integration run with recorded file size, duration, average throughput, memory, and outcome.
+**Gate:** repeatable Railway integration run with recorded file size, duration, average throughput, memory, and outcome. This is the current testing phase.
 
 ## Current baseline (2026-11-06)
 
-The current /batch and /copy commands call messages.forwardMessages (native forwarding), not download/re-upload. Current destination resolution also tries to resolve the bot username through the user's personal MTProto client. Both must be replaced.
+The current branch uses the authenticated user MTProto account for source retrieval and an independent bot-authenticated MTProto uploader for destination posts. /batch retrieves exact supplied IDs through messages.getMessages / channels.getMessages and preserves input order. /copy uses paginated history. Per-user destination setup is available through /setstorage by forwarding a message from the destination; destination selections are currently memory-only. The uploader client now starts without a shared STORAGE_TARGET so per-user destination selection works on a clean deployment. Consecutive photo/video messages sharing Telegram grouped_id are uploaded as a single media group when all members can be downloaded. Common caption formatting entities are preserved using Telegram UTF-16 offsets. Transfer jobs now create and edit one progress message with stage, item position, elapsed time, estimated remaining time, and uploaded/failed/skipped totals. Successful text, media, and album sends extract returned destination message IDs and report public or private channel links; basic groups report chat/message identifiers. Completed work also reports result references if the user cancels a running transfer.
 
-Latest main CI: successful Go CI run #24 at commit 46f7cc5a12f596a7b547cc14cf6678856ed79074.
+Latest feature-branch CI: successful Go CI run #56 at commit `015d4a9b21dc463b881d14afe69011f68de13265`.
 
 ## Deployment safety
 

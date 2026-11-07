@@ -33,3 +33,12 @@ func TestRandomIDs(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+func TestFetchMessagesByIDRejectsInvalidInput(t *testing.T) {
+	if _, err := FetchMessagesByID(nil, nil, nil, []int{1}); err == nil {
+		t.Fatal("expected missing API and peer to be rejected")
+	}
+	if _, err := FetchMessagesByID(nil, nil, nil, nil); err == nil {
+		t.Fatal("expected empty ID list to be rejected")
+	}
+}
