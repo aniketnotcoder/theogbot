@@ -35,7 +35,7 @@ func retryFloodWait(ctx context.Context, operation func() (tg.UpdatesClass,error
 	for attempt:=0; attempt<maxAttempts; attempt++ {
 		result, err := operation(); if err == nil { return result,nil }
 		flood, waitErr := tgerr.FloodWait(ctx,err)
-		if waitErr != nil { return nil,waitErr }; if !flood { return nil,err }
+		if flood { continue }; if waitErr != nil { return nil,waitErr }; return nil,err
 	}
 	return nil, fmt.Errorf("Telegram FloodWait persisted after %d safe retries",maxAttempts)
 }

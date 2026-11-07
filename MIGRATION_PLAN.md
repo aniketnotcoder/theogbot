@@ -77,6 +77,7 @@ Gate: test history containing ID gaps and mixed media yields exactly the expecte
 - Add byte-level download/upload callbacks and throttle edits.
 - Retry FloodWait only for safe operations; avoid duplicate uploads after uncertain send outcomes.
 - Bound workers, file sizes and timeouts; check disk space; clean temporary files on cancel/failure.
+- Implementation pushed on `dev/transfer-rebuild` in commit `8645571` (with cleanup hardening in `dadae16`): parallel download byte counting, gotd uploader chunk callbacks, aggregate album upload bytes, measured speed/byte ETA, 128 MiB free-space reserve, 2 GiB item cap, four workers per file, and explicit FloodWait-only retries for message sends. CI acceptance gate remains pending.
 Gate: cancel during download/upload; no orphan temp files or duplicate uploads; counts reconcile.
 
 ### Phase 5 — Railway readiness
