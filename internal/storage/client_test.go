@@ -49,3 +49,29 @@ func TestUploadProgressAggregatesConcurrentFileParts(t *testing.T) {
 	if err:=p.Chunk(context.Background(),uploader.ProgressState{ID:1,Uploaded:60,Total:60});err!=nil{t.Fatal(err)}
 	if current!=80{t.Fatalf("aggregate uploaded=%d, want 80",current)}
 }
+
+
+func TestResolveTargetBuildsBotChannelPeerWithoutUserOnlyDialogs(t *testing.T) {
+	peer, err := resolveTarget(context.Background(), nil, "-1009876543210")
+	if err != nil { t.Fatal(err) }
+	channel, ok := peer.(*tg.InputPeerChannel)
+	if !ok { t.Fatalf("peer type = %T, want *tg.InputPeerChannel", peer) }
+	if channel.ChannelID != 9876543210 { t.Fatalf("channel ID = %d, want 9876543210", channel.ChannelID) }
+	if channel.AccessHash != 0 { t.Fatalf("bot channel access hash = %d, want zero", channel.AccessHash) }
+}
+
+func TestResolveTargetBuildsBasicGroupPeer(t *testing.T) {
+	peer, err := resolveTarget(context.Background(), nil, "-12345")
+	if err != nil { t.Fatal(err) }
+	group, ok := peer.(*tg.InputPeerChat)
+	if !ok { t.Fatalf("peer type = %T, want *tg.InputPeerChat", peer) }
+	if group.ChatID != 12345 { t.Fatalf("group ID = %d, want 12345", group.ChatID) }
+}
+
+func TestResolveTargetRejectsInvalidIDs(t *testing.T) {
+	for _, target := range []string{"", "12345", "abc", "-1000000000000", "-1009999999999999"} {
+		if _, err := resolveTarget(context.Background(), nil, target); err == nil {
+			t.Errorf("resolveTarget(%q) expected an error", target)
+		}
+	}
+}
