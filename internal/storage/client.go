@@ -83,10 +83,10 @@ func (c *Client) Ready(ctx context.Context) error {
 }
 
 func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass, entities []tg.MessageEntityClass) (tg.UpdatesClass, error) {
-	return c.UploadPathTo(ctx, nil, path, filename, mime, caption, kind, attrs, nil)
+	return c.UploadPathTo(ctx, nil, path, filename, mime, caption, kind, attrs, entities)
 }
 
-func (c *Client) UploadPathTo(ctx context.Context, destination tg.InputPeerClass, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass) (tg.UpdatesClass, error) {
+func (c *Client) UploadPathTo(ctx context.Context, destination tg.InputPeerClass, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass, entities []tg.MessageEntityClass) (tg.UpdatesClass, error) {
 	if err := c.Ready(ctx); err != nil { return nil, err }
 	c.mu.RLock()
 	s, u, configuredPeer := c.sender, c.uploader, c.targetPeer
