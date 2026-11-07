@@ -1,6 +1,6 @@
 package bot
 
-import ("context"; "testing"; "encoding/json"; "strings"; "time"; "github.com/gotd/td/telegram/query/messages"; "github.com/gotd/td/tg")
+import ("testing"; "encoding/json"; "strings"; "time"; "github.com/gotd/td/telegram/query/messages"; "github.com/gotd/td/tg")
 
 func TestParseChatLink(t *testing.T) {
 	tests := []struct {
