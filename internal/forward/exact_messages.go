@@ -33,14 +33,16 @@ func FetchMessagesByID(ctx context.Context, api *tg.Client, source tg.InputPeerC
    result, err = api.MessagesGetMessages(ctx, inputIDs)
   }
   if err != nil { return nil, fmt.Errorf("retrieve requested messages %d-%d: %w", batch[0], batch[len(batch)-1], err) }
-  entities := peer.EntitiesFromResult(result)
   switch value := result.(type) {
   case *tg.MessagesMessages:
-   for _, item := range value.Messages { if msg, ok := item.AsNotEmpty(); ok { found[msg.ID] = messages.Elem{Msg:msg, Peer:source, Entities:entities} } }
+   entities := peer.EntitiesFromResult(value)
+   for _, item := range value.Messages { if msg, ok := item.AsNotEmpty(); ok { found[msg.GetID()] = messages.Elem{Msg:msg, Peer:source, Entities:entities} } }
   case *tg.MessagesMessagesSlice:
-   for _, item := range value.Messages { if msg, ok := item.AsNotEmpty(); ok { found[msg.ID] = messages.Elem{Msg:msg, Peer:source, Entities:entities} } }
+   entities := peer.EntitiesFromResult(value)
+   for _, item := range value.Messages { if msg, ok := item.AsNotEmpty(); ok { found[msg.GetID()] = messages.Elem{Msg:msg, Peer:source, Entities:entities} } }
   case *tg.MessagesChannelMessages:
-   for _, item := range value.Messages { if msg, ok := item.AsNotEmpty(); ok { found[msg.ID] = messages.Elem{Msg:msg, Peer:source, Entities:entities} } }
+   entities := peer.EntitiesFromResult(value)
+   for _, item := range value.Messages { if msg, ok := item.AsNotEmpty(); ok { found[msg.GetID()] = messages.Elem{Msg:msg, Peer:source, Entities:entities} } }
   default:
    return nil, fmt.Errorf("unsupported Telegram messages response %T", result)
   }
