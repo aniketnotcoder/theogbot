@@ -80,3 +80,27 @@ func TestFormatProgressCompletesAtHundredPercent(t *testing.T) {
 	got := formatProgress("Copy","Finished",4,4,3,1,0,12*time.Second)
 	if !strings.Contains(got,"Copy · 100%") || !strings.Contains(got,"ETA: 0s") { t.Fatalf("unexpected completed progress: %s",got) }
 }
+
+func TestDestinationMessageRefsForPublicChannel(t *testing.T) {
+	updates := &tg.Updates{Updates: []tg.UpdateClass{
+		&tg.UpdateNewChannelMessage{Message:&tg.Message{ID:41}},
+		&tg.UpdateNewChannelMessage{Message:&tg.Message{ID:42}},
+	}}
+	got := destinationMessageRefs(destination{ChatID:-1001234567890,Username:"sample_channel"},updates)
+	want := []string{"https://t.me/sample_channel/41","https://t.me/sample_channel/42"}
+	if strings.Join(got,"|") != strings.Join(want,"|") { t.Fatalf("refs = %v, want %v",got,want) }
+}
+func TestDestinationMessageRefsForPrivateChannel(t *testing.T) {
+	updates := &tg.Updates{Updates: []tg.UpdateClass{&tg.UpdateNewChannelMessage{Message:&tg.Message{ID:88}}}}
+	got := destinationMessageRefs(destination{ChatID:-1009876543210},updates)
+	if len(got)!=1 || got[0]!="https://t.me/c/9876543210/88" { t.Fatalf("refs = %v",got) }
+}
+func TestDestinationMessageRefsForBasicGroupUsesIdentifier(t *testing.T) {
+	updates := &tg.Updates{Updates: []tg.UpdateClass{&tg.UpdateNewMessage{Message:&tg.Message{ID:17}}}}
+	got := destinationMessageRefs(destination{ChatID:-12345},updates)
+	if len(got)!=1 || got[0]!="chat -12345 · message 17" { t.Fatalf("refs = %v",got) }
+}
+func TestDestinationMessageRefsSupportsShortSentMessage(t *testing.T) {
+	got := destinationMessageRefs(destination{ChatID:-1001234567890},&tg.UpdateShortSentMessage{ID:19})
+	if len(got)!=1 || got[0]!="https://t.me/c/1234567890/19" { t.Fatalf("refs = %v",got) }
+}
