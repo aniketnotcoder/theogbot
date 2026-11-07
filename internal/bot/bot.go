@@ -243,7 +243,6 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 				for _, item := range downloads {
 					items = append(items, storage.AlbumItem{Path:item.Path, Filename:item.Name, MIME:item.MIME, Kind:item.Kind, Caption:item.Caption, Attributes:item.Attributes, Entities:item.Entities})
 				}
-				if progress != nil { progress.update(ctx,"Uploading album",i+1,done,failed,skipped,false) }
 				if progress != nil { progress.update(ctx,"Uploading album",i+1,done,failed,skipped,true) }
 				updates, uploadErr := b.storage.UploadAlbumToWithProgress(ctx, destinationPeer, items, func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading album",current,total,i+1,done,failed,skipped)}})
 				for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
