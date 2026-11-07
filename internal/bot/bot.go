@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aniketnotcoder/theogbot/internal/account"
@@ -32,6 +33,8 @@ type Bot struct {
 	accounts *account.Manager
 	storage *storage.Client
 	tempDir string
+	jobsMu sync.Mutex
+	jobs map[int64]context.CancelFunc
 }
 
 type update struct {
@@ -55,7 +58,7 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 	return &Bot{token: token, client: &http.Client{
 		Timeout: 45*time.Second,
 		Transport: &http.Transport{Proxy:http.ProxyFromEnvironment,MaxIdleConns:100,MaxIdleConnsPerHost:20,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:10*time.Second,ResponseHeaderTimeout:40*time.Second,DialContext:(&net.Dialer{Timeout:10*time.Second,KeepAlive:30*time.Second}).DialContext},
-	},log:logger,accounts:accounts}
+	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc)}
 }
 
 func (b *Bot) SetStorage(client *storage.Client) { b.storage = client }
@@ -85,7 +88,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	case "/start":
 		reply="Welcome to TheOGBot.\n\n/login +COUNTRYCODEPHONE — connect your Telegram account\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected posts\n/copy CHAT_LINK [LIMIT] — download and upload accessible chat history\n/logout — disconnect\n/info — account status\\n/storage — storage uploader status"
 	case "/help":
-		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected media\n/copy CHAT_LINK [LIMIT] — download and upload history, default 5000, max 50000\n/logout — disconnect\n/info — account status\n\nUse only chats your account can access. Telegram restrictions and flood waits are respected."
+		reply="Commands:\n/start — welcome\n/login +COUNTRYCODEPHONE — begin MTProto login\n/code CODE — submit login code\n/password PASSWORD — submit 2FA password\n/batch LINK [LINK ...] — download and upload selected media\n/copy CHAT_LINK [LIMIT] — download and upload history, default 50000, max 50000\n/logout — disconnect\n/info — account status\n\nUse only chats your account can access. Telegram restrictions and flood waits are respected."
 	case "/login":
 		if len(fields)<2{reply="Usage: /login +COUNTRYCODEPHONE\nThen /code YOUR_CODE and, if prompted, /password YOUR_2FA_PASSWORD"}else if b.accounts==nil{reply="MTProto unavailable. Configure API_ID and API_HASH."}else if b.accounts.Connected(msg.From.ID){reply="An account session is already active. Use /logout first."}else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil{reply="Could not start login: "+err.Error()}else{reply="Login started. Submit the Telegram code here using /code YOUR_CODE."}
 	case "/code":
@@ -95,9 +98,11 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);password:=strings.TrimSpace(strings.TrimPrefix(text,fields[0]))
 		if password==""{reply="Usage: /password YOUR_2FA_PASSWORD"}else if err:=b.accounts.SubmitPassword(msg.From.ID,password);err!=nil{reply="Could not submit password: "+err.Error()}else{reply="2-step verification password submitted."}
 	case "/batch":
-		if len(fields)<2{reply="Usage: /batch https://t.me/channel/123 [https://t.me/channel/124]"}else{go b.runBatch(ctx,msg.From.ID,msg.Chat.ID,fields[1:]);return}
+		if len(fields)<2{reply="Usage: /batch https://t.me/channel/123 [https://t.me/channel/124]"}else if !b.startJob(msg.From.ID,ctx){reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(ctx,msg.From.ID,msg.Chat.ID,fields[1:])}();return}
 	case "/copy":
-		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=5000;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{go b.runCopy(ctx,msg.From.ID,msg.Chat.ID,fields[1],limit);return}}
+		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=50000;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{if !b.startJob(msg.From.ID,ctx){reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(ctx,msg.From.ID,msg.Chat.ID,fields[1],limit)}();return}}}
+	case "/cancel":
+		if b.cancelJob(msg.From.ID){reply="Cancellation requested. The current operation will stop safely."}else{reply="No active transfer to cancel."}
 	case "/storage":
 		if b.storage == nil { reply = "Storage uploader is not configured. Set STORAGE_TARGET and restart." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else { reply = "Storage uploader: connected\\nDestination: configured\\nUpload mode: download → upload" }
 	case "/logout":
@@ -234,4 +239,29 @@ func (b *Bot) call(ctx context.Context,method string,values url.Values,out any)e
 	if resp.StatusCode<200||resp.StatusCode>=300||!result.OK{return fmt.Errorf("telegram API %s: %s (HTTP %d)",method,result.Description,resp.StatusCode)}
 	if out!=nil&&len(result.Result)>0{return json.Unmarshal(result.Result,out)}
 	return nil
+}
+
+func (b *Bot) startJob(userID int64, parent context.Context) bool {
+	b.jobsMu.Lock()
+	defer b.jobsMu.Unlock()
+	if _, exists := b.jobs[userID]; exists { return false }
+	ctx, cancel := context.WithCancel(parent)
+	b.jobs[userID] = cancel
+	_ = ctx
+	return true
+}
+
+func (b *Bot) finishJob(userID int64) {
+	b.jobsMu.Lock()
+	if cancel := b.jobs[userID]; cancel != nil { cancel(); delete(b.jobs, userID) }
+	b.jobsMu.Unlock()
+}
+
+func (b *Bot) cancelJob(userID int64) bool {
+	b.jobsMu.Lock()
+	cancel := b.jobs[userID]
+	b.jobsMu.Unlock()
+	if cancel == nil { return false }
+	cancel()
+	return true
 }
