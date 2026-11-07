@@ -18,7 +18,7 @@ Inspected bot.py, main.py, config.py, database.py and plugins/public.py, test.py
 - /batch parses explicit links but currently scans history to find requested IDs; it should fetch exact IDs directly and preserve supplied order.
 - /copy intentionally ignores a trailing post ID and copies whole-chat history, defaulting to 5000. The command needs explicit and documented range/order semantics.
 - History iteration needs an audit for pagination direction, gaps, oldest/newest ordering, exact limits and early RPC errors.
-- /storage resolves the configured numeric ID from the storage bot's dialogs. A group created by another account works only after the actual uploader bot joins it and Telegram exposes it in that bot's dialogs. Source-account membership does not grant bot membership.
+- /storage resolves private channel IDs with channels.getChannels using the uploader bot's MTProto identity. messages.getDialogs is users-only; fabricating InputPeerChannel with a guessed zero access hash without resolving the returned channel constructor is insufficient. Source-account membership does not grant bot membership.
 - Current upload path sends everything as a document. Captions, entities, media attributes, thumbnails, albums, text-only messages and destination message links are incomplete.
 - Storage readiness must return promptly on startup failure rather than leaving commands waiting until their context deadline.
 - Fix existing CI compile errors before feature work. The reported failure in internal/forward/peers.go was undefined time.
@@ -92,3 +92,9 @@ Gate: repeatable end-to-end tests and user approval before rollout.
 - Never log login codes, passwords or session strings.
 - Do not claim universal restricted-content support from README marketing text; test exact message/API behavior.
 - No automatic destination-group creation in the first release. Configure a destination accessible to the chosen uploader identity.
+
+### Phase 1 hotfix — resolve uploader bot channel peers
+- Resolve channel IDs with channels.getChannels using InputChannel{ChannelID, AccessHash: 0} under the actual uploader bot session.
+- Use the access hash from Telegram's returned Channel constructor to create the send peer.
+- Keep basic-group peer handling unchanged; fail /setstorage with the exact Telegram resolution error if the uploader bot cannot access the channel.
+- Add unit tests ensuring the returned Telegram access hash is used and missing channel responses fail closed.

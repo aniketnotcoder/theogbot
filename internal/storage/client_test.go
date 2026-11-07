@@ -51,13 +51,18 @@ func TestUploadProgressAggregatesConcurrentFileParts(t *testing.T) {
 }
 
 
-func TestResolveTargetBuildsBotChannelPeerWithoutUserOnlyDialogs(t *testing.T) {
-	peer, err := resolveTarget(context.Background(), nil, "-1009876543210")
+func TestChannelPeerUsesAccessHashReturnedByTelegram(t *testing.T) {
+	peer, err := channelPeerFromChats([]tg.ChatClass{&tg.Channel{ID:9876543210, AccessHash:123456789}}, 9876543210)
 	if err != nil { t.Fatal(err) }
 	channel, ok := peer.(*tg.InputPeerChannel)
 	if !ok { t.Fatalf("peer type = %T, want *tg.InputPeerChannel", peer) }
 	if channel.ChannelID != 9876543210 { t.Fatalf("channel ID = %d, want 9876543210", channel.ChannelID) }
-	if channel.AccessHash != 0 { t.Fatalf("bot channel access hash = %d, want zero", channel.AccessHash) }
+	if channel.AccessHash != 123456789 { t.Fatalf("channel access hash = %d, want Telegram-returned 123456789", channel.AccessHash) }
+}
+
+func TestChannelPeerRejectsMissingChannelFromTelegramResponse(t *testing.T) {
+	_, err := channelPeerFromChats([]tg.ChatClass{&tg.Channel{ID:1,AccessHash:2}}, 9876543210)
+	if err == nil { t.Fatal("expected missing channel error") }
 }
 
 func TestResolveTargetBuildsBasicGroupPeer(t *testing.T) {
@@ -65,7 +70,13 @@ func TestResolveTargetBuildsBasicGroupPeer(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	group, ok := peer.(*tg.InputPeerChat)
 	if !ok { t.Fatalf("peer type = %T, want *tg.InputPeerChat", peer) }
-	if group.ChatID != 12345 { t.Fatalf("group ID = %d, want 12345", group.ChatID) }
+	if group.ChatID != 12345 { t.Fatalf("chat ID = %d, want 12345", group.ChatID) }
+}
+
+func TestResolveTargetRequiresAPIForPrivateChannels(t *testing.T) {
+	if _, err := resolveTarget(context.Background(), nil, "-1009876543210"); err == nil {
+		t.Fatal("expected channel resolution to require the uploader MTProto API")
+	}
 }
 
 func TestResolveTargetRejectsInvalidIDs(t *testing.T) {
