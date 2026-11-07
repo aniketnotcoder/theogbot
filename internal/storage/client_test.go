@@ -1,6 +1,6 @@
 package storage
 
-import ("testing"; "context")
+import ("testing"; "context"; "github.com/gotd/td/tg")
 
 func TestNewAllowsPerUserDestinationConfiguration(t *testing.T) {
 	client, err := New(12345, "api-hash", "bot-token", "")
@@ -20,4 +20,21 @@ func TestUploadAlbumRejectsInvalidItemCountsBeforeConnecting(t *testing.T) {
 	if _, err := client.UploadAlbumTo(context.Background(), nil, nil); err == nil { t.Fatal("expected empty album to be rejected") }
 	items := make([]AlbumItem, 11)
 	if _, err := client.UploadAlbumTo(context.Background(), nil, items); err == nil { t.Fatal("expected album larger than ten to be rejected") }
+}
+
+func TestUTF16ByteOffsetHandlesAstralCharacters(t *testing.T) {
+	value := "A😀B"
+	cases := []struct { offset, want int }{{0,0},{1,1},{3,5},{4,6}}
+	for _, tc := range cases {
+		got, ok := utf16ByteOffset(value, tc.offset)
+		if !ok || got != tc.want { t.Errorf("utf16ByteOffset(%q, %d) = (%d,%v), want (%d,true)", value, tc.offset, got, ok, tc.want) }
+	}
+	if _, ok := utf16ByteOffset(value, 2); ok { t.Fatal("UTF-16 offset inside a surrogate pair must be rejected") }
+}
+
+func TestCaptionOptionsKeepsPlainCaptionAndFormatting(t *testing.T) {
+	plain := captionOptions("plain caption", nil)
+	if len(plain) != 1 || plain[0].Zero() { t.Fatal("expected a plain caption option") }
+	formatted := captionOptions("bold text", []tg.MessageEntityClass{&tg.MessageEntityBold{Offset:0,Length:4}})
+	if len(formatted) != 1 || formatted[0].Zero() { t.Fatal("expected formatted caption option") }
 }

@@ -199,7 +199,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 			if albumReady && len(downloads) == groupLen {
 				items := make([]storage.AlbumItem, 0, groupLen)
 				for _, item := range downloads {
-					items = append(items, storage.AlbumItem{Path:item.Path, Filename:item.Name, MIME:item.MIME, Kind:item.Kind, Caption:item.Caption, Attributes:item.Attributes})
+					items = append(items, storage.AlbumItem{Path:item.Path, Filename:item.Name, MIME:item.MIME, Kind:item.Kind, Caption:item.Caption, Attributes:item.Attributes, Entities:item.Entities})
 				}
 				_, uploadErr := b.storage.UploadAlbumTo(ctx, destinationPeer, items)
 				for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
@@ -235,7 +235,7 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s progress: %d/%d uploaded (%d failed, %d skipped).", label, done, len(ids), failed, skipped))
 			continue
 		}
-		_, uploadErr := b.storage.UploadPathTo(ctx, destinationPeer, downloaded.Path, downloaded.Name, downloaded.MIME, downloaded.Caption, downloaded.Kind, downloaded.Attributes)
+		_, uploadErr := b.storage.UploadPathTo(ctx, destinationPeer, downloaded.Path, downloaded.Name, downloaded.MIME, downloaded.Caption, downloaded.Kind, downloaded.Attributes, downloaded.Entities)
 		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
 			failed++

@@ -19,6 +19,7 @@ var ErrProtectedMessage = errors.New("Telegram marks this message as protected (
 type Downloaded struct {
 	Path, Name, MIME, Kind, Caption string
 	GroupedID int64
+	Entities []tg.MessageEntityClass
 	Size int64
 	Attributes []tg.DocumentAttributeClass
 }
@@ -63,7 +64,7 @@ func DownloadMessage(ctx context.Context, api *tg.Client, elem messages.Elem, te
 	if info.Size() > MaxDownloadBytes { return nil, fmt.Errorf("download exceeded the configured %d-byte limit", MaxDownloadBytes) }
 
 	name := safeFilename(file.Name)
-	return &Downloaded{Path:path, Name:name, MIME:file.MIMEType, Size:info.Size(), Kind:kind, Caption:msg.Message, Attributes:attributes, GroupedID:groupedID}, nil
+	return &Downloaded{Path:path, Name:name, MIME:file.MIMEType, Size:info.Size(), Kind:kind, Caption:msg.Message, Entities:msg.Entities, Attributes:attributes, GroupedID:groupedID}, nil
 }
 
 func safeFilename(raw string) string {

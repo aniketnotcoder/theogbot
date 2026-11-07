@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/styling"
+	"github.com/gotd/td/telegram/message/entity"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 )
@@ -80,8 +82,8 @@ func (c *Client) Ready(ctx context.Context) error {
 	}
 }
 
-func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass) (tg.UpdatesClass, error) {
-	return c.UploadPathTo(ctx, nil, path, filename, mime, caption, kind, attrs)
+func (c *Client) UploadPath(ctx context.Context, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass, entities []tg.MessageEntityClass) (tg.UpdatesClass, error) {
+	return c.UploadPathTo(ctx, nil, path, filename, mime, caption, kind, attrs, nil)
 }
 
 func (c *Client) UploadPathTo(ctx context.Context, destination tg.InputPeerClass, path, filename, mime, caption, kind string, attrs []tg.DocumentAttributeClass) (tg.UpdatesClass, error) {
@@ -93,8 +95,7 @@ func (c *Client) UploadPathTo(ctx context.Context, destination tg.InputPeerClass
 	c.mu.RUnlock()
 	file, err := u.FromPath(ctx, path)
 	if err != nil { return nil, fmt.Errorf("upload file: %w", err) }
-	captionOption := []styling.StyledTextOption{}
-	if caption != "" { captionOption = append(captionOption, styling.Plain(caption)) }
+	captionOption := captionOptions(caption, entities)
 	if kind == "photo" {
 		if peer != nil { return s.To(peer).UploadedPhoto(ctx, file, captionOption...) }
 		return s.Resolve(c.target).UploadedPhoto(ctx, file, captionOption...)
@@ -109,6 +110,7 @@ func (c *Client) UploadPathTo(ctx context.Context, destination tg.InputPeerClass
 type AlbumItem struct {
 	Path, Filename, MIME, Kind, Caption string
 	Attributes []tg.DocumentAttributeClass
+	Entities []tg.MessageEntityClass
 }
 
 // UploadAlbumTo uploads a Telegram media group (2-10 photos/videos) and sends it
@@ -128,7 +130,7 @@ func (c *Client) UploadAlbumTo(ctx context.Context, destination tg.InputPeerClas
 		file, err := u.FromPath(ctx, item.Path)
 		if err != nil { return nil, fmt.Errorf("upload album item %d: %w", i+1, err) }
 		caption := []styling.StyledTextOption{}
-		if item.Caption != "" { caption = append(caption, styling.Plain(item.Caption)) }
+		caption = captionOptions(item.Caption, item.Entities)
 		var option message.MediaOption
 		if item.Kind == "photo" {
 			option = message.UploadedPhoto(file, caption...)
@@ -191,4 +193,75 @@ func resolveTarget(ctx context.Context, api *tg.Client, target string) (tg.Input
 		for _, item := range chats { if ch, ok := item.(*tg.Chat); ok && int64(ch.ID)==chatID { return &tg.InputPeerChat{ChatID:ch.ID},nil } }
 	}
 	return nil, fmt.Errorf("storage chat %s was not found in the bot's dialogs; add the bot to that group/channel first", target)
+}
+
+func captionOptions(caption string, entities []tg.MessageEntityClass) []styling.StyledTextOption {
+	if caption == "" { return nil }
+	if len(entities) == 0 { return []styling.StyledTextOption{styling.Plain(caption)} }
+	return []styling.StyledTextOption{styling.Custom(func(builder *entity.Builder) error {
+		type span struct { start, end int; formatter entity.Formatter }
+		spans := make([]span, 0, len(entities))
+		for _, source := range entities {
+			if source == nil || source.GetOffset() < 0 || source.GetLength() <= 0 { continue }
+			formatter := captionFormatter(source)
+			if formatter == nil { continue }
+			start, okStart := utf16ByteOffset(caption, source.GetOffset())
+			end, okEnd := utf16ByteOffset(caption, source.GetOffset()+source.GetLength())
+			if !okStart || !okEnd || start >= end { continue }
+			spans = append(spans, span{start:start, end:end, formatter:formatter})
+		}
+		boundaries := []int{0, len(caption)}
+		for _, item := range spans { boundaries = append(boundaries, item.start, item.end) }
+		sort.Ints(boundaries)
+		unique := boundaries[:0]
+		for _, point := range boundaries { if len(unique)==0 || unique[len(unique)-1]!=point { unique=append(unique,point) } }
+		for i:=0; i+1<len(unique); i++ {
+			start,end:=unique[i],unique[i+1]
+			if start==end { continue }
+			formats:=make([]entity.Formatter,0,2)
+			for _, item:=range spans { if item.start<=start && item.end>=end { formats=append(formats,item.formatter) } }
+			builder.Format(caption[start:end],formats...)
+		}
+		return nil
+	})}
+}
+
+func utf16ByteOffset(value string, target int) (int, bool) {
+	if target < 0 { return 0, false }
+	units, bytes := 0, 0
+	if target == 0 { return 0, true }
+	for _, r := range value {
+		width := 1
+		if r > 0xFFFF { width = 2 }
+		if units+width > target { return 0, false }
+		units += width
+		bytes += len(string(r))
+		if units == target { return bytes, true }
+	}
+	return 0, units == target
+}
+
+func captionFormatter(source tg.MessageEntityClass) entity.Formatter {
+	switch item := source.(type) {
+	case *tg.MessageEntityBold: return entity.Bold()
+	case *tg.MessageEntityItalic: return entity.Italic()
+	case *tg.MessageEntityUnderline: return entity.Underline()
+	case *tg.MessageEntityStrike: return entity.Strike()
+	case *tg.MessageEntityCode: return entity.Code()
+	case *tg.MessageEntityPre: return entity.Pre(item.Language)
+	case *tg.MessageEntityURL: return entity.URL()
+	case *tg.MessageEntityTextURL: return entity.TextURL(item.URL)
+	case *tg.MessageEntityMention: return entity.Mention()
+	case *tg.MessageEntityHashtag: return entity.Hashtag()
+	case *tg.MessageEntityBotCommand: return entity.BotCommand()
+	case *tg.MessageEntityEmail: return entity.Email()
+	case *tg.MessageEntityPhone: return entity.Phone()
+	case *tg.MessageEntityCashtag: return entity.Cashtag()
+	case *tg.MessageEntityBankCard: return entity.BankCard()
+	case *tg.MessageEntitySpoiler: return entity.Spoiler()
+	case *tg.MessageEntityCustomEmoji: return entity.CustomEmoji(item.DocumentID)
+	case *tg.MessageEntityBlockquote: return entity.Blockquote(item.Collapsed)
+	case *tg.InputMessageEntityMentionName: return entity.MentionName(item.UserID)
+	default: return nil
+	}
 }

@@ -27,7 +27,8 @@ The destination bot session is distinct from every user's source session. Do not
 - Download to temporary disk with cancellation, size limits, cleanup, and byte-progress callbacks.
 - Upload with gotd's MTProto uploader from the bot-authenticated client.
 - Preserve filename, MIME type, video/audio attributes, and caption where available.
-- Unit-test metadata mapping, safe temporary filenames, album grouping/count limits, size guards, and cleanup.
+- Preserve supported caption formatting entities using Telegram UTF-16 offsets; safely skip unsupported entity types.
+- Unit-test metadata mapping, safe temporary filenames, album grouping/count limits, UTF-16 caption offsets, size guards, and cleanup.
 - Record Telegram retrieval errors accurately. Do not attempt to defeat Telegram content-protection controls.
 
 **Gate:** a permitted test file can be downloaded by the source account and uploaded by the bot into the configured storage chat, with the resulting message identified.
