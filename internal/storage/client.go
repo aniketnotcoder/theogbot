@@ -153,8 +153,8 @@ func (c *Client) UploadAlbumToWithProgress(ctx context.Context,destination tg.In
 			if item.Kind=="photo"{option=message.UploadedPhoto(file,caption...)}else{preserved:=make([]tg.DocumentAttributeClass,0,len(item.Attributes));for _,attr:=range item.Attributes{if _,isFilename:=attr.(*tg.DocumentAttributeFilename);!isFilename{preserved=append(preserved,attr)}};option=message.UploadedDocument(file,caption...).Filename(item.Filename).MIME(item.MIME).Attributes(preserved...)}
 			options=append(options,message.ForceMulti(option))
 		}
-		builder:=s.To(peer);if peer==nil{builder=s.Resolve(target)}
-		return builder.Album(ctx,options[0],options[1:]...)
+		if peer!=nil{return s.To(peer).Album(ctx,options[0],options[1:]...)}
+		return s.Resolve(target).Album(ctx,options[0],options[1:]...)
 	})
 }
 
