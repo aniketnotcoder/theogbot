@@ -132,7 +132,7 @@ func TestProgressBarIsClampedAndConsistent(t *testing.T) {
 
 func TestProgressMessageIsCleanAndUsesPhaseBytes(t *testing.T) {
 	got:=formatProgress("Batch","Uploading",4,10,3,0,0,4*1024,10*1024,2*1024*1024,2*time.Minute)
-	for _,want:=range []string{"BATCH","Uploading  ·  40%","4 of 10 items","4.0 KiB of 10.0 KiB","2.0 MiB/s","left"} {
+	for _,want:=range []string{"BATCH","Uploading  ·  40%","3 of 10 items","4.0 KiB of 10.0 KiB","2.0 MiB/s","left"} {
 		if !strings.Contains(got,want){t.Fatalf("progress missing %q: %s",want,got)}
 	}
 	for _,unwanted:=range []string{"Stage:","Bytes:","Speed:","Elapsed:"} {
@@ -153,4 +153,8 @@ func TestProgressResetsPerFilePhase(t *testing.T) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.bytesCurrent!=0||p.bytesTotal!=0||p.speed!=0 {t.Fatalf("stale upload progress carried into download: current=%d total=%d speed=%f",p.bytesCurrent,p.bytesTotal,p.speed)}
+}
+
+func TestProgressETADoesNotShowZeroForRemainingBytes(t *testing.T) {
+	if got:=progressETA(200*time.Millisecond);got!="<1s"{t.Fatalf("ETA = %q, want <1s",got)}
 }

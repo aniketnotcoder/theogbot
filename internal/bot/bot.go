@@ -93,6 +93,11 @@ func progressBar(percent int) string {
 	return strings.Repeat("━",filled)+strings.Repeat("·",16-filled)
 }
 
+func progressETA(d time.Duration) string {
+	if d>0&&d<time.Second { return "<1s" }
+	return d.Round(time.Second).String()
+}
+
 func progressStage(stage string) string {
 	s:=strings.ToLower(stage)
 	switch {
@@ -126,10 +131,10 @@ func formatProgress(label, stage string, current, total, done, failed, skipped i
 	if byteTotal>0 {
 		line+=fmt.Sprintf("\n%s of %s",humanBytes(byteCurrent),humanBytes(byteTotal))
 		if speed>0 { line+="  ·  "+humanSpeed(speed) }
-		if byteCurrent<byteTotal&&speed>0 { line+="\nAbout "+(time.Duration(float64(byteTotal-byteCurrent)/speed*float64(time.Second))).Round(time.Second).String()+" left" }
+		if byteCurrent<byteTotal&&speed>0 { line+="\nAbout "+progressETA(time.Duration(float64(byteTotal-byteCurrent)/speed*float64(time.Second)))+" left" }
 	} else if processed>0&&total>processed {
 		remaining:=time.Duration(float64(elapsed)*float64(total-processed)/float64(processed)).Round(time.Second)
-		line+="\nAbout "+remaining.String()+" left"
+		line+="\nAbout "+progressETA(remaining)+" left"
 	} else if processed>=total&&total>0 {
 		line+="\nCompleted in "+elapsed.Round(time.Second).String()
 	}
