@@ -1,6 +1,6 @@
 package bot
 
-import ("testing"; "encoding/json"; "strings"; "time"; "github.com/gotd/td/telegram/query/messages"; "github.com/gotd/td/tg")
+import ("context"; "testing"; "encoding/json"; "strings"; "time"; "github.com/gotd/td/telegram/query/messages"; "github.com/gotd/td/tg")
 
 func TestParseChatLink(t *testing.T) {
 	tests := []struct {
@@ -145,4 +145,12 @@ func TestProgressCompletionHasNoDebugFields(t *testing.T) {
 	for _,want:=range []string{"TRANSFER COMPLETE","100%","5 of 5 items","Completed in 1m15s"} {
 		if !strings.Contains(got,want){t.Fatalf("completion missing %q: %s",want,got)}
 	}
+}
+
+func TestProgressResetsPerFilePhase(t *testing.T) {
+	p:=&progressReporter{total:2,displayStage:"Uploading",bytesCurrent:900,bytesTotal:900,speed:100}
+	p.update(context.Background(),"Downloading",1,0,0,0,true)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.bytesCurrent!=0||p.bytesTotal!=0||p.speed!=0 {t.Fatalf("stale upload progress carried into download: current=%d total=%d speed=%f",p.bytesCurrent,p.bytesTotal,p.speed)}
 }

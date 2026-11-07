@@ -71,7 +71,7 @@ type destination struct { ChatID int64; Title string; Username string }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"` }
 
-type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; mu sync.Mutex; last time.Time; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
+type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; mu sync.Mutex; last time.Time; displayStage string; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
 
 func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total int) (*progressReporter, error) {
 	var sent sentMessage
@@ -161,6 +161,7 @@ func (p *progressReporter) updateBytes(ctx context.Context,stage string,current,
 	now:=time.Now()
 	p.recordByteSample(stage,current,total,now)
 	p.mu.Lock()
+	if p.displayStage!=progressStage(stage) { p.displayStage=progressStage(stage);p.bytesCurrent=0;p.bytesTotal=0;p.speed=0 }
 	p.bytesCurrent,p.bytesTotal=current,total
 	p.mu.Unlock()
 	p.update(ctx,stage,item,done,failed,skipped,false)
@@ -168,6 +169,7 @@ func (p *progressReporter) updateBytes(ctx context.Context,stage string,current,
 func (p *progressReporter) update(ctx context.Context, stage string, current, done, failed, skipped int, force bool) {
 	if p==nil||p.messageID==0{return};now:=time.Now();p.mu.Lock()
 	if !force&&now.Sub(p.last)<900*time.Millisecond{p.mu.Unlock();return};p.last=now
+	if p.displayStage!=progressStage(stage) { p.displayStage=progressStage(stage);p.bytesCurrent=0;p.bytesTotal=0;p.speed=0 }
 	bytesCurrent,bytesTotal,speed:=p.bytesCurrent,p.bytesTotal,p.speed;p.mu.Unlock()
 	text:=formatProgress(p.label,stage,current,p.total,done,failed,skipped,bytesCurrent,bytesTotal,speed,now.Sub(p.started))
 	markup:=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel transfer","callback_data":"job:cancel"}}}}
@@ -258,7 +260,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(msg.From.ID)}
-		reply=fmt.Sprintf("🤖 TheOGBot\n\n⚙️ Backend: Go\n🔐 Account: %s\n📦 Destination: %s\n💾 Sessions: memory only",status,b.destinationStatus(msg.From.ID))
+		reply=fmt.Sprintf("TheOGBot\n\nAccount: %s\nDestination: %s",status,b.destinationStatus(msg.From.ID))
 	default: reply="Unknown command. Send /help."
 	}
 	if err:=b.sendMessage(ctx,msg.Chat.ID,reply);err!=nil{b.log.Error("send message failed","chat_id",msg.Chat.ID,"error",err)}
@@ -551,7 +553,7 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 		switch kind {
 		case "phone":
 			if b.accounts==nil{_ = b.sendMessage(ctx,msg.Chat.ID,"MTProto login is unavailable.");return true}
-			if err:=b.accounts.Begin(ctx,msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not start login: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"🔐 Login started. Waiting for Telegram to send the verification prompt…")}
+			if err:=b.accounts.Begin(ctx,msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not start login: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"Login started. Waiting for the verification prompt…")}
 		case "batch":
 			links:=strings.Fields(value);if len(links)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send one or more Telegram post links.");return true}
 			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,links)}()}
@@ -566,11 +568,11 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 		switch b.accounts.Status(msg.From.ID) {
 		case "awaiting_code":
 			_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
-			if err:=b.accounts.SubmitCode(msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not submit verification code: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"⌛ Verification code received securely. Checking with Telegram…")}
+			if err:=b.accounts.SubmitCode(msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not submit verification code: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"Code received. Checking…")}
 			return true
 		case "awaiting_password":
 			_ = b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID)
-			if err:=b.accounts.SubmitPassword(msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not submit 2-step password: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"🔒 2-step password received securely. Checking with Telegram…")}
+			if err:=b.accounts.SubmitPassword(msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not submit 2-step password: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"Password received. Checking…")}
 			return true
 		}
 	}
@@ -581,11 +583,12 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	_ = b.call(ctx,"answerCallbackQuery",url.Values{"callback_query_id":{q.ID}},nil)
 	if q.Message==nil{return}
 	chatID,userID:=q.Message.Chat.ID,q.From.ID
+	if chatID!=userID { return }
 	if q.Message.Chat.Type!="private" { _ = b.sendMessage(ctx,chatID,"Open the bot's private chat and send /start to use these controls securely."); return }
 	switch q.Data {
 	case "login:start":
 		b.setPendingInput(userID,"phone")
-		b.sendForceReply(ctx,chatID,"🔐 Connect your Telegram account\nSend your phone number including country code, for example +911234567890.","Phone number")
+		b.sendForceReply(ctx,chatID,"Connect your Telegram account\nSend your phone number including country code, for example +911234567890.","Phone number")
 	case "login:cancel":
 		if b.accounts!=nil{b.accounts.Logout(userID)}
 		_ = b.sendMessage(ctx,chatID,"Login cancelled. You can start again whenever you're ready.")
@@ -606,7 +609,7 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 		if b.accounts!=nil&&b.accounts.Logout(userID){_ = b.sendMessage(ctx,chatID,"🚪 Your in-memory Telegram session has been disconnected.")}else{_ = b.sendMessage(ctx,chatID,"No active account session.")}
 	case "account:status":
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(userID)}
-		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("📊 Account: %s\n📦 Destination: %s\n💾 Session storage: memory only",status,b.destinationStatus(userID)))
+		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("Account: %s\nDestination: %s",status,b.destinationStatus(userID)))
 	case "help":
 		_ = b.sendMessage(ctx,chatID,"Choose an action from the menu. During login, reply directly to each secure prompt. During a transfer, use the Cancel transfer button if you need to stop.") 
 	case "menu:home":
@@ -617,21 +620,21 @@ func (b *Bot) onAccountEvent(userID int64,state string,err error){
 	ctx,cancel:=context.WithTimeout(context.Background(),12*time.Second);defer cancel()
 	switch state {
 	case "awaiting_code":
-		_ = b.sendMessage(ctx,userID,"📩 Telegram verification code requested. Reply to the next prompt with the code. Do not share it with anyone.")
-		b.sendForceReply(ctx,userID,"🔢 Enter the Telegram login code sent to your Telegram account.","Telegram login code")
-		b.sendMessageMarkup(ctx,userID,"Login controls:",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"✖ Cancel login","callback_data":"login:cancel"}}}})
+		_ = b.sendMessage(ctx,userID,"Telegram verification code requested. Reply to the next prompt with the code. Do not share it with anyone.")
+		b.sendForceReply(ctx,userID,"Enter the Telegram login code sent to your Telegram account.","Telegram login code")
+		b.sendMessageMarkup(ctx,userID,"Login controls:",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel login","callback_data":"login:cancel"}}}})
 	case "awaiting_password":
-		_ = b.sendMessage(ctx,userID,"🔐 Two-step verification is enabled on this account.")
-		b.sendForceReply(ctx,userID,"🔒 Enter your Telegram 2-step verification password.","2-step password")
-		b.sendMessageMarkup(ctx,userID,"Login controls:",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"✖ Cancel login","callback_data":"login:cancel"}}}})
+		_ = b.sendMessage(ctx,userID,"Two-step verification is enabled on this account.")
+		b.sendForceReply(ctx,userID,"Enter your Telegram 2-step verification password.","2-step password")
+		b.sendMessageMarkup(ctx,userID,"Login controls:",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel login","callback_data":"login:cancel"}}}})
 	case "connected":
-		b.sendMenu(ctx,userID,"✅ Telegram account connected successfully. What would you like to do next?")
+		b.sendMenu(ctx,userID,"Telegram account connected. Choose your next action.")
 	case "failed":
 		message:="Telegram login failed. Start again using Connect account."
-		if err!=nil{lower:=strings.ToLower(err.Error());switch{case strings.Contains(lower,"phone_code_expired"):message="⌛ That verification code expired. Start again to request a fresh code.";case strings.Contains(lower,"phone_code_invalid"):message="❌ Telegram rejected that code. Start a fresh login and enter the newest code.";case strings.Contains(lower,"password_hash_invalid"):message="❌ Incorrect 2-step verification password. Start login again and retry.";default:message="❌ Login failed: "+err.Error()}}
+		if err!=nil{lower:=strings.ToLower(err.Error());switch{case strings.Contains(lower,"phone_code_expired"):message="That verification code expired. Choose Retry to request a fresh code.";case strings.Contains(lower,"phone_code_invalid"):message="Telegram rejected that code. Choose Retry to request a fresh code.";case strings.Contains(lower,"password_hash_invalid"):message="Incorrect 2-step verification password. Choose Retry to try again.";default:message="❌ Login failed: "+err.Error()}}
 		b.sendMessageMarkup(ctx,userID,message,map[string]any{"inline_keyboard":[][]map[string]string{
-			{{"text":"🔄 Retry with same number","callback_data":"login:retry"}},
-			{{"text":"📱 Use another number","callback_data":"login:start"}},
+			{{"text":"Retry with same number","callback_data":"login:retry"}},
+			{{"text":"Use another number","callback_data":"login:start"}},
 		}})
 	}
 }
