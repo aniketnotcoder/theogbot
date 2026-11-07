@@ -6,7 +6,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 
 - `/login +COUNTRYCODEPHONE`, then `/code CODE` and optionally `/password PASSWORD`: connect your own Telegram account.
 - `/batch LINK [LINK ...]`: transfer only the explicitly linked posts, in the supplied order. Links must belong to one source chat.
-- `/copy CHAT_LINK [LIMIT]`: transfer accessible chat history. A post permalink can identify the chat; the trailing post ID is ignored in history mode. Default limit is 50000, maximum 50000.
+- `/copy CHAT_LINK [LIMIT]`: transfer accessible chat history. A post permalink can identify the chat; the trailing post ID is ignored in history mode. Default limit is 100, maximum 50000.
 - `/cancel`: cancel your active transfer.
 - `/setstorage`: choose your personal destination by forwarding a message from its group/channel in private chat.
 - `/storage`: show your saved destination and uploader access status.
