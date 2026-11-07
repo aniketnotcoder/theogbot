@@ -4,7 +4,9 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 
 ## Commands
 
-- `/login +COUNTRYCODEPHONE`, then `/code CODE` and optionally `/password PASSWORD`: connect your own Telegram account.
+- `/start`: open the interactive menu. Choose **Connect account**, reply with your phone number, then reply directly to the verification-code and optional 2-step-password prompts. You do not need to type `/code` or `/password`.
+- `/login +COUNTRYCODEPHONE`: start login directly; the bot guides you through reply prompts.
+- `/code CODE` and `/password PASSWORD`: legacy login input commands remain available.
 - `/batch LINK [LINK ...]`: transfer only the explicitly linked posts, in the supplied order. Links must belong to one source chat.
 - `/copy CHAT_LINK [LIMIT]`: transfer accessible chat history. A post permalink can identify the chat; the trailing post ID is ignored in history mode. Default limit is 100, maximum 50000.
 - `/cancel`: cancel your active transfer.
@@ -25,6 +27,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 ## Telegram setup
 
 1. Create a bot with @BotFather and set `BOT_TOKEN`.
+2. Open the bot and send `/start`. Use the inline **Connect account** button, then reply to each private login prompt in sequence. Verification codes and 2-step passwords are deleted from the chat after submission.
 2. Get `API_ID` and `API_HASH` from https://my.telegram.org/apps.
 3. Create or choose a private storage group/channel.
 4. Add the exact bot whose token is configured in `BOT_TOKEN` to that destination. Give it permission to send media (and post messages for channels).

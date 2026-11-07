@@ -562,11 +562,11 @@ func (b *Bot) onAccountEvent(userID int64,state string,err error){
 	case "awaiting_code":
 		_ = b.sendMessage(ctx,userID,"📩 Telegram verification code requested. Reply to the next prompt with the code. Do not share it with anyone.")
 		b.sendForceReply(ctx,userID,"🔢 Enter the Telegram login code sent to your Telegram account.","Telegram login code")
-		b.sendMessageMarkup(ctx,userID,"",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"✖ Cancel login","callback_data":"login:cancel"}}}})
+		b.sendMessageMarkup(ctx,userID,"Login controls:",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"✖ Cancel login","callback_data":"login:cancel"}}}})
 	case "awaiting_password":
 		_ = b.sendMessage(ctx,userID,"🔐 Two-step verification is enabled on this account.")
 		b.sendForceReply(ctx,userID,"🔒 Enter your Telegram 2-step verification password.","2-step password")
-		b.sendMessageMarkup(ctx,userID,"",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"✖ Cancel login","callback_data":"login:cancel"}}}})
+		b.sendMessageMarkup(ctx,userID,"Login controls:",map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"✖ Cancel login","callback_data":"login:cancel"}}}})
 	case "connected":
 		b.sendMenu(ctx,userID,"✅ Telegram account connected successfully. What would you like to do next?")
 	case "failed":
