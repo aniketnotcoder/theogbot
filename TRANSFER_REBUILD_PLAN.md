@@ -54,7 +54,7 @@ The destination bot session is distinct from every user's source session. Do not
 
 ## Current baseline (2026-11-06)
 
-The current /batch and /copy commands call messages.forwardMessages (native forwarding), not download/re-upload. Current destination resolution also tries to resolve the bot username through the user's personal MTProto client. Both must be replaced.
+The current branch uses the authenticated user MTProto account for source retrieval and an independent bot-authenticated MTProto uploader for destination posts. /batch now retrieves only the exact IDs supplied by the user through messages.getMessages / channels.getMessages; /copy still uses paginated history. Transfer results are reassembled in the caller-supplied order. Destination is still one configured STORAGE_TARGET, not a per-user destination selector.
 
 Latest main CI: successful Go CI run #24 at commit 46f7cc5a12f596a7b547cc14cf6678856ed79074.
 

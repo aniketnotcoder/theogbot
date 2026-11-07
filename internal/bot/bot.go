@@ -157,24 +157,13 @@ func (b *Bot) executeTransfer(ctx context.Context, api *tg.Client, source tg.Inp
 		return
 	}
 	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s started: %d messages. Mode: download → upload.", label, len(ids)))
-	wanted := make(map[int]bool, len(ids))
-	for _, id := range ids { wanted[id] = true }
-	found := make(map[int]messages.Elem, len(ids))
-	iter := messages.NewQueryBuilder(api).GetHistory(source).BatchSize(100).Iter()
-	for iter.Next(ctx) {
-		elem := iter.Value()
-		id := elem.Msg.GetID()
-		if wanted[id] { found[id] = elem; delete(wanted,id) }
-		if len(wanted)==0 { break }
-	}
-	if err := iter.Err(); err != nil {
-		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s could not read source messages: %v", label, err))
+	elements, err := forward.FetchMessagesByID(ctx, api, source, ids)
+	if err != nil {
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s could not retrieve the exact requested posts: %v", label, err))
 		return
 	}
-	if len(wanted)>0 {
-		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s stopped: %d of %d requested messages could not be retrieved from source history.",label,len(wanted),len(ids)))
-		return
-	}
+	found := make(map[int]messages.Elem, len(elements))
+	for _, elem := range elements { found[elem.Msg.GetID()] = elem }
 	done, failed, skipped := 0,0,0
 	for i,id := range ids {
 		if err := ctx.Err(); err != nil {
