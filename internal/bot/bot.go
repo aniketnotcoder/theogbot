@@ -242,7 +242,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	case "/login":
 		if msg.Chat.Type!="private" { reply="For security, start account login in a private chat with this bot." } else if b.accounts==nil { reply="MTProto unavailable. Configure API_ID and API_HASH." } else if len(fields)<2 {
 			b.setPendingInput(msg.From.ID,"phone")
-			b.sendForceReply(ctx,msg.Chat.ID,"🔐 Connect Telegram account\nSend your phone number with country code, for example +911234567890.","Phone number")
+			b.sendForceReply(ctx,msg.Chat.ID,"Connect Telegram account\nSend your phone number with country code, for example +911234567890.","Phone number")
 			return
 		} else if b.accounts.Connected(msg.From.ID) { reply="An account session is already active. Use Logout first." } else if err:=b.accounts.Begin(ctx,msg.From.ID,fields[1]);err!=nil { reply="Could not start login: "+err.Error() } else { reply="Login started. Waiting for Telegram's code prompt…" }
 	case "/code":
@@ -278,7 +278,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 
 func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []string) {
 	ctx,cancel:=context.WithTimeout(parent,30*time.Minute);defer cancel()
-	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your Telegram account first with /login.");return}
+	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your account first using the menu.");return}
 	var source tg.InputPeerClass;ids:=make([]int,0,len(rawLinks))
 	for _,raw:=range rawLinks{
 		parsed,err:=links.Parse(raw);if err!=nil{_=b.sendMessage(ctx,chatID,"Invalid Telegram post link: "+raw);return}
@@ -293,7 +293,7 @@ func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []str
 
 func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limit int) {
 	ctx,cancel:=context.WithTimeout(parent,30*time.Minute);defer cancel()
-	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your Telegram account first with /login.");return}
+	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your account first using the menu.");return}
 	username,channelID,err:=parseChatLink(raw);if err!=nil{_=b.sendMessage(ctx,chatID,err.Error());return}
 	var source tg.InputPeerClass
 	if username!=""{source,err=forward.ResolveUsername(ctx,api,username)}else{source,err=forward.ResolvePrivateChannelID(ctx,api,channelID)}
@@ -603,20 +603,20 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 		if b.accounts!=nil{b.accounts.Logout(userID)}
 		_ = b.sendMessage(ctx,chatID,"Login cancelled. You can start again whenever you're ready.")
 	case "login:retry":
-		if b.accounts==nil { _ = b.sendMessage(ctx,chatID,"MTProto login is unavailable.") } else if err:=b.accounts.Retry(ctx,userID);err!=nil { _ = b.sendMessage(ctx,chatID,"Could not restart login: "+err.Error()) } else { _ = b.sendMessage(ctx,chatID,"🔐 A fresh login attempt has started. Wait for the new Telegram code prompt.") }
+		if b.accounts==nil { _ = b.sendMessage(ctx,chatID,"MTProto login is unavailable.") } else if err:=b.accounts.Retry(ctx,userID);err!=nil { _ = b.sendMessage(ctx,chatID,"Could not restart login: "+err.Error()) } else { _ = b.sendMessage(ctx,chatID,"A fresh login attempt has started. Wait for the new Telegram code prompt.") }
 	case "storage:set":
 		b.destMu.Lock();b.awaitingDestination[userID]=true;b.destMu.Unlock()
-		_ = b.sendMessage(ctx,chatID,"📦 Forward any message from your destination group/channel here. The configured uploader bot must already have posting permission.")
+		_ = b.sendMessage(ctx,chatID,"Forward any message from your destination group or channel here. The configured uploader bot must already have posting permission.")
 	case "transfer:batch":
 		b.setPendingInput(userID,"batch")
-		b.sendForceReply(ctx,chatID,"📥 Send one or more Telegram post links, separated by spaces or new lines.","Telegram post links")
+		b.sendForceReply(ctx,chatID,"Send one or more Telegram post links, separated by spaces or new lines.","Telegram post links")
 	case "transfer:copy":
 		b.setPendingInput(userID,"copy")
-		b.sendForceReply(ctx,chatID,"🗂 Send a Telegram chat link and optionally a message limit (default 100).","Chat link [limit]")
+		b.sendForceReply(ctx,chatID,"Send a Telegram chat link and optionally a message limit (default 100).","Chat link [limit]")
 	case "job:cancel":
-		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"⛔ Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
+		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
 	case "account:logout":
-		if b.accounts!=nil&&b.accounts.Logout(userID){_ = b.sendMessage(ctx,chatID,"🚪 Your in-memory Telegram session has been disconnected.")}else{_ = b.sendMessage(ctx,chatID,"No active account session.")}
+		if b.accounts!=nil&&b.accounts.Logout(userID){_ = b.sendMessage(ctx,chatID,"Your Telegram account has been disconnected.")}else{_ = b.sendMessage(ctx,chatID,"No active account session.")}
 	case "account:status":
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(userID)}
 		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("Account: %s\nDestination: %s",status,b.destinationStatus(userID)))
@@ -641,7 +641,7 @@ func (b *Bot) onAccountEvent(userID int64,state string,err error){
 		b.sendMenu(ctx,userID,"Telegram account connected. Choose your next action.")
 	case "failed":
 		message:="Telegram login failed. Start again using Connect account."
-		if err!=nil{lower:=strings.ToLower(err.Error());switch{case strings.Contains(lower,"phone_code_expired"):message="That verification code expired. Choose Retry to request a fresh code.";case strings.Contains(lower,"phone_code_invalid"):message="Telegram rejected that code. Choose Retry to request a fresh code.";case strings.Contains(lower,"password_hash_invalid"):message="Incorrect 2-step verification password. Choose Retry to try again.";default:message="❌ Login failed: "+err.Error()}}
+		if err!=nil{lower:=strings.ToLower(err.Error());switch{case strings.Contains(lower,"phone_code_expired"):message="That verification code expired. Choose Retry to request a fresh code.";case strings.Contains(lower,"phone_code_invalid"):message="Telegram rejected that code. Choose Retry to request a fresh code.";case strings.Contains(lower,"password_hash_invalid"):message="Incorrect 2-step verification password. Choose Retry to try again.";default:message="Login failed: "+err.Error()}}
 		b.sendMessageMarkup(ctx,userID,message,map[string]any{"inline_keyboard":[][]map[string]string{
 			{{"text":"Retry with same number","callback_data":"login:retry"}},
 			{{"text":"Use another number","callback_data":"login:start"}},
