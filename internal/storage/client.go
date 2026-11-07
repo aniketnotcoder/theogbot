@@ -195,13 +195,13 @@ func resolveTarget(_ context.Context, _ *tg.Client, target string) (tg.InputPeer
 		if channelID <= 0 || channelID > 997852516352 {
 			return nil, fmt.Errorf("invalid Telegram channel ID in chat ID %q", target)
 		}
-		return &tg.InputPeerChannel{ChannelID:int(channelID), AccessHash:0}, nil
+		return &tg.InputPeerChannel{ChannelID:int64(channelID), AccessHash:0}, nil
 	}
 	chatID := -id
 	if chatID <= 0 || chatID > 2147483647 {
 		return nil, fmt.Errorf("invalid basic group ID in chat ID %q", target)
 	}
-	return &tg.InputPeerChat{ChatID:int(chatID)}, nil
+	return &tg.InputPeerChat{ChatID:int64(chatID)}, nil
 }
 
 func captionOptions(caption string, entities []tg.MessageEntityClass) []styling.StyledTextOption {
