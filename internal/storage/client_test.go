@@ -100,3 +100,23 @@ func TestLargeFileUploaderUsesMaximumTelegramPartSize(t *testing.T) {
 		t.Fatalf("208 MiB file requires %d parts, want 416 at 512 KiB", parts)
 	}
 }
+
+
+// Connection-loss recovery is handled inside gotd for MTProto requests that
+// were not acknowledged by Telegram. At the application layer, only explicit
+// FloodWait responses are safe to replay; context cancellation and other
+// uncertain outcomes must not repeat the final message send.
+func TestRetryFloodWaitDoesNotReplayUncertainUploadErrors(t *testing.T) {
+	calls := 0
+	wantErr := context.Canceled
+	_, err := retryFloodWait(context.Background(), func() (tg.UpdatesClass, error) {
+		calls++
+		return nil, wantErr
+	})
+	if err != wantErr {
+		t.Fatalf("retryFloodWait error = %v, want %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Fatalf("operation called %d times, want exactly once for uncertain outcome", calls)
+	}
+}
