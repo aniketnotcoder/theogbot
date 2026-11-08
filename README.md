@@ -27,6 +27,8 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 
 ## Telegram setup
 
+The welcome screen, help/tutorial prompts, login keypad, storage confirmations, transfer messages, and progress cards use a fresh SFW anime image from the documented [Waifu API](https://docs.waifu.best/docs/getting-started/) (`https://api.waifu.best/images?IsNsfw=False&IncludedTags=waifu`). No API key is required for random public SFW images. If the image service or Telegram photo delivery is unavailable, the bot falls back to a normal text message so actions remain usable.
+
 1. Create a bot with @BotFather and set `BOT_TOKEN`.
 2. Open TheOGBot and send `/start`. Use **Connect account** and complete the private login prompts.
 3. Get `API_ID` and `API_HASH` from https://my.telegram.org/apps.

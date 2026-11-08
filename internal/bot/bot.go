@@ -79,13 +79,12 @@ type progressReporter struct { bot *Bot; chatID, messageID int64; label string; 
 
 func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total int) (*progressReporter, error) {
 	var sent sentMessage
-	markup:=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Cancel transfer","callback_data":"job:cancel"}}}}
-	if err := b.call(ctx, "sendMessage", url.Values{
-		"chat_id":{strconv.FormatInt(chatID,10)},
-		"text":{formatProgress(label,"Preparing",0,total,0,0,0,0,0,0,time.Since(time.Now()))},
-		"reply_markup":{mustJSON(markup)},
-	}, &sent); err != nil { return nil, err }
-	return &progressReporter{bot:b,chatID:chatID,messageID:sent.MessageID,label:label,total:total,started:time.Now()},nil
+	markup := map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "Cancel transfer", "callback_data": "job:cancel"}}}}
+	caption := formatProgress(label, "Preparing", 0, total, 0, 0, 0, 0, 0, 0, 0)
+	if err := b.sendPhotoMarkup(ctx, chatID, caption, markup, &sent); err != nil {
+		return nil, err
+	}
+	return &progressReporter{bot: b, chatID: chatID, messageID: sent.MessageID, label: label, total: total, started: time.Now()}, nil
 }
 
 func mustJSON(value any) string { raw,_:=json.Marshal(value);return string(raw) }
@@ -191,7 +190,7 @@ func (p *progressReporter) update(ctx context.Context, stage string, current, do
 		markup=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Back to menu","callback_data":"menu:home"},{"text":"New batch","callback_data":"transfer:batch"}}}}
 	}
 	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text},"reply_markup":{mustJSON(markup)}}
-	if err:=p.bot.call(ctx,"editMessageText",values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
+	if err:=p.bot.call(ctx,"editMessageCaption",values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
 }
 type apiResponse[T any] struct {
 	OK bool `json:"ok"`
@@ -596,10 +595,30 @@ func (b *Bot) captureForwardedDestination(ctx context.Context, msg *incomingMess
 }
 
 func (b *Bot) deleteMessage(ctx context.Context,chatID,messageID int64)error{return b.call(ctx,"deleteMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(messageID,10)}},nil)}
-func (b *Bot) sendMessage(ctx context.Context,chatID int64,text string)error{return b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{text}},nil)}
-func (b *Bot) sendMessageMarkup(ctx context.Context,chatID int64,text string,markup any) error {
-	raw,err:=json.Marshal(markup);if err!=nil{return err}
-	return b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{text},"reply_markup":{string(raw)}},nil)
+func (b *Bot) sendPhotoMarkup(ctx context.Context, chatID int64, caption string, markup any, out any) error {
+	photo := b.welcomeImage(ctx)
+	if photo != "" {
+		values := url.Values{
+			"chat_id": {strconv.FormatInt(chatID, 10)},
+			"photo": {photo},
+			"caption": {caption},
+		}
+		if markup != nil { values.Set("reply_markup", mustJSON(markup)) }
+		if err := b.call(ctx, "sendPhoto", values, out); err == nil { return nil } else {
+			b.log.Warn("waifu image message failed; using text fallback", "chat_id", chatID, "error", err)
+		}
+	}
+	values := url.Values{"chat_id": {strconv.FormatInt(chatID, 10)}, "text": {caption}}
+	if markup != nil { values.Set("reply_markup", mustJSON(markup)) }
+	return b.call(ctx, "sendMessage", values, out)
+}
+
+func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error {
+	return b.sendPhotoMarkup(ctx, chatID, text, nil, nil)
+}
+
+func (b *Bot) sendMessageMarkup(ctx context.Context, chatID int64, text string, markup any) error {
+	return b.sendPhotoMarkup(ctx, chatID, text, markup, nil)
 }
 func otpKeyboard() map[string]any {
 	return map[string]any{"inline_keyboard":[][]map[string]string{
@@ -620,12 +639,12 @@ func otpPrompt(code string) string {
 }
 func (b *Bot) sendOTPKeypad(ctx context.Context,chatID,userID int64) {
 	var sent sentMessage
-	err:=b.call(ctx,"sendMessage",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"text":{otpPrompt("")},"reply_markup":{mustJSON(otpKeyboard())}},&sent)
+	err:=b.sendPhotoMarkup(ctx,chatID,otpPrompt(""),otpKeyboard(),&sent)
 	if err!=nil { b.log.Warn("OTP keypad send failed","chat_id",chatID,"error",err);return }
 	b.otpMu.Lock();b.otpInputs[userID]=&otpInput{ChatID:chatID,MessageID:sent.MessageID};b.otpMu.Unlock()
 }
 func (b *Bot) editOTPKeypad(ctx context.Context,input *otpInput) error {
-	return b.call(ctx,"editMessageText",url.Values{"chat_id":{strconv.FormatInt(input.ChatID,10)},"message_id":{strconv.FormatInt(input.MessageID,10)},"text":{otpPrompt(input.Code)},"reply_markup":{mustJSON(otpKeyboard())}},nil)
+	return b.call(ctx,"editMessageCaption",url.Values{"chat_id":{strconv.FormatInt(input.ChatID,10)},"message_id":{strconv.FormatInt(input.MessageID,10)},"caption":{otpPrompt(input.Code)},"reply_markup":{mustJSON(otpKeyboard())}},nil)
 }
 func (b *Bot) handleOTPCallback(ctx context.Context,q *callbackQuery,chatID,userID int64) bool {
 	if !strings.HasPrefix(q.Data,"otp:"){return false}
@@ -644,7 +663,7 @@ func (b *Bot) handleOTPCallback(ctx context.Context,q *callbackQuery,chatID,user
 	case q.Data=="otp:cancel":
 		delete(b.otpInputs,userID);b.otpMu.Unlock()
 		if b.accounts!=nil { b.accounts.Logout(userID) }
-		_ = b.call(ctx,"editMessageText",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},"text":{"Login cancelled."}},nil)
+		_ = b.call(ctx,"editMessageCaption",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},"caption":{"Login cancelled."}},nil)
 		return true
 	case q.Data=="otp:submit":
 		code:=input.Code
@@ -655,7 +674,7 @@ func (b *Bot) handleOTPCallback(ctx context.Context,q *callbackQuery,chatID,user
 			_ = b.sendMessage(ctx,chatID,"Could not submit the code. Please try again.")
 			return true
 		}
-		_ = b.call(ctx,"editMessageText",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},"text":{"Code submitted. Checking…"}},nil)
+		_ = b.call(ctx,"editMessageCaption",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},"caption":{"Code submitted. Checking…"}},nil)
 		return true
 	default:
 		b.otpMu.Unlock();return true
@@ -671,7 +690,7 @@ func (b *Bot) sendForceReply(ctx context.Context,chatID int64,text,placeholder s
 	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("force-reply prompt failed","chat_id",chatID,"error",err)}
 }
 
-type waifuImageResponse struct {
+// Waifu API docs: https://docs.waifu.best/docs/getting-started/\ntype waifuImageResponse struct {
 	Items []struct {
 		URL string `json:"url"`
 	} `json:"items"`
@@ -680,7 +699,7 @@ type waifuImageResponse struct {
 func (b *Bot) welcomeImage(ctx context.Context) string {
 	imageCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(imageCtx, http.MethodGet, "https://api.waifu.im/images?IsNsfw=False&IncludedTags=waifu&Gif=false", nil)
+	req, err := http.NewRequestWithContext(imageCtx, http.MethodGet, "https://api.waifu.best/images?IsNsfw=False&IncludedTags=waifu&PageSize=1", nil)
 	if err != nil { return "" }
 	resp, err := b.client.Do(req)
 	if err != nil { return "" }
@@ -713,17 +732,6 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
 		{{"text":"My account","callback_data":"account:status"},{"text":"Help / tutorial","callback_data":"help"}},
 	}}
-	photo := b.welcomeImage(ctx)
-	if photo != "" {
-		err := b.call(ctx, "sendPhoto", url.Values{
-			"chat_id": {strconv.FormatInt(chatID, 10)},
-			"photo": {photo},
-			"caption": {caption},
-			"reply_markup": {mustJSON(markup)},
-		}, nil)
-		if err == nil { return }
-		b.log.Warn("welcome image send failed; using text fallback", "error", err)
-	}
 	if err := b.sendMessageMarkup(ctx, chatID, caption, markup); err != nil {
 		b.log.Warn("welcome message send failed", "chat_id", chatID, "error", err)
 	}

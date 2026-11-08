@@ -171,3 +171,18 @@ func TestOTPKeyboardHasTenDigitsAndActions(t *testing.T) {
 	for _,row:=range k {for _,button:=range row {got[button["callback_data"]]=true}}
 	for _,key:=range []string{"otp:d:0","otp:d:1","otp:d:2","otp:d:3","otp:d:4","otp:d:5","otp:d:6","otp:d:7","otp:d:8","otp:d:9","otp:back","otp:clear","otp:submit","otp:cancel"} {if !got[key]{t.Errorf("missing keypad action %s",key)}}
 }
+
+func TestWaifuImageResponseDecodesDocumentedItems(t *testing.T) {
+	raw := `{"items":[{"url":"https://cdn.example/waifu.jpg"}]}`
+	var got waifuImageResponse
+	if err := json.Unmarshal([]byte(raw), &got); err != nil { t.Fatal(err) }
+	if len(got.Items) != 1 || got.Items[0].URL != "https://cdn.example/waifu.jpg" {
+		t.Fatalf("decoded image response = %+v", got)
+	}
+}
+
+func TestWaifuImageResponseAllowsEmptyFallback(t *testing.T) {
+	var got waifuImageResponse
+	if err := json.Unmarshal([]byte(`{"items":[]}`), &got); err != nil { t.Fatal(err) }
+	if len(got.Items) != 0 { t.Fatalf("expected empty image list, got %+v", got) }
+}
