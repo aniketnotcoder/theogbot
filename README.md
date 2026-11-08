@@ -28,15 +28,13 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 ## Telegram setup
 
 1. Create a bot with @BotFather and set `BOT_TOKEN`.
-2. Open the bot and send `/start`. Use the inline **Connect account** button, then reply to each private login prompt in sequence. Verification codes and 2-step passwords are deleted from the chat after submission.
+2. Open TheOGBot and send `/start`. Use **Connect account** and complete the private login prompts.
 3. Get `API_ID` and `API_HASH` from https://my.telegram.org/apps.
-3. Create or choose a private storage group/channel.
-4. Add the exact bot whose token is configured in `BOT_TOKEN` to that destination. Give it permission to send media (and post messages for channels).
-5. In a private chat with TheOGBot, send `/setstorage` and forward a message from your destination group/channel. The destination is stored per user in memory. The uploader bot must already be a member.
-6. The source account that invokes transfers connects through the **Connect account** button (or `/login`) and must already be able to access the source chat.
-7. Keep credentials in Railway Variables, never in Git.
+4. Choose **Create storage** or send `/createstorage`. The connected source account creates a private supergroup, invites the exact uploader bot configured by `BOT_TOKEN`, promotes it with limited admin rights, verifies that it can post, and connects it as the personal destination.
+5. To use an existing group/channel instead, add the uploader bot with posting permission, send `/setstorage`, and forward a message from that destination.
+6. Keep credentials in Railway Variables, never in Git.
 
-**Identity matters:** the source user's membership does not grant the uploader bot access to the storage group. If another Telegram account created the storage group, that is fine; the configured uploader bot must still be added to it.
+**Identity matters:** the source account owns the automatically created group. The uploader bot is a separate Telegram identity; automatic setup adds it and promotes it. Source-account membership alone does not give the uploader bot access to an existing destination.
 
 ## Transfer behavior and limitations
 
