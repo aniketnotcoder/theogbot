@@ -138,6 +138,7 @@ func(interactiveAuth)SignUp(context.Context)(auth.UserInfo,error){return auth.Us
 type StorageGroup struct {
 	ChatID int64
 	Title string
+	InviteLink string
 }
 
 // CreateStorageGroup creates a private supergroup from the connected source
@@ -192,7 +193,21 @@ func (m *Manager) CreateStorageGroup(ctx context.Context, userID int64, botUsern
 	}); err != nil {
 		return StorageGroup{}, fmt.Errorf("the uploader bot joined, but could not be promoted to admin: %w", err)
 	}
-	return StorageGroup{ChatID: -1000000000000 - channel.ID, Title: title}, nil
+	// The person chatting with the bot may be using a different Telegram
+	// account from the connected source account. A private t.me/c link alone
+	// will not grant that account membership, so create a real join link.
+	exported, err := api.MessagesExportChatInvite(ctx, &tg.MessagesExportChatInviteRequest{
+		Peer: &tg.InputPeerChannel{ChannelID: channel.ID, AccessHash: channel.AccessHash},
+		Title: "TheOGBot storage access",
+	})
+	if err != nil {
+		return StorageGroup{}, fmt.Errorf("storage group and uploader are ready, but Telegram could not create a join link: %w", err)
+	}
+	invite, ok := exported.(*tg.ChatInviteExported)
+	if !ok || strings.TrimSpace(invite.Link) == "" {
+		return StorageGroup{}, fmt.Errorf("Telegram returned an invalid storage invite link (%T)", exported)
+	}
+	return StorageGroup{ChatID: -1000000000000 - channel.ID, Title: title, InviteLink: invite.Link}, nil
 }
 
 func(m *Manager)API(userID int64)(*tg.Client,bool){

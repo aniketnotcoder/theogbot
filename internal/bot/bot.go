@@ -238,10 +238,10 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	if (command=="/code"||command=="/password")&&msg.Chat.Type!="private"{_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);_=b.sendMessage(ctx,msg.Chat.ID,"For account security, send login codes and 2FA passwords only in a private chat with this bot.");return}
 	switch command {
 	case "/start", "/menu":
-		b.sendMenu(ctx,msg.Chat.ID,"THEOGBOT\n\nYour transfers, in one place.\nChoose an action.")
+		b.sendWelcome(ctx,msg.Chat.ID,false)
 		return
-	case "/help":
-		b.sendMenu(ctx,msg.Chat.ID,"Use the buttons for setup and transfers. You can still use commands if you prefer.")
+	case "/help", "/tutorial":
+		b.sendWelcome(ctx,msg.Chat.ID,true)
 		return
 	case "/login":
 		if msg.Chat.Type!="private" { reply="For security, start account login in a private chat with this bot." } else if b.accounts==nil { reply="MTProto unavailable. Configure API_ID and API_HASH." } else if len(fields)<2 {
@@ -557,11 +557,10 @@ func (b *Bot) createStorageGroup(ctx context.Context, userID, chatID int64) {
 	b.destinations[userID] = destination{ChatID: group.ChatID, Title: group.Title}
 	delete(b.awaitingDestination, userID)
 	b.destMu.Unlock()
-	groupURL := fmt.Sprintf("https://t.me/c/%d/1", -group.ChatID-1000000000000)
 	_ = b.sendMessageMarkup(ctx, chatID,
-		fmt.Sprintf("Storage is ready.\n\n%s\nThe uploader bot is an admin and the connection has been verified.", group.Title),
+		fmt.Sprintf("✦ STORAGE IS READY\n\n%s\n\nThe uploader bot is connected and can post files.\n\nImportant: tap Join storage group using the Telegram account you want to view the files with. It can be different from the account you connected for reading source chats.", group.Title),
 		map[string]any{"inline_keyboard": [][]map[string]string{
-			{{"text":"Open storage group","url":groupURL}},
+			{{"text":"Join storage group ↗","url":group.InviteLink}},
 			{{"text":"Back to menu","callback_data":"menu:home"}},
 		}},
 	)
@@ -671,13 +670,72 @@ func (b *Bot) sendForceReply(ctx context.Context,chatID int64,text,placeholder s
 	markup:=map[string]any{"force_reply":true,"selective":true,"input_field_placeholder":placeholder}
 	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("force-reply prompt failed","chat_id",chatID,"error",err)}
 }
+
+type waifuImageResponse struct {
+	Items []struct {
+		URL string `json:"url"`
+	} `json:"items"`
+}
+
+func (b *Bot) welcomeImage(ctx context.Context) string {
+	imageCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(imageCtx, http.MethodGet, "https://api.waifu.im/images?IsNsfw=False&IncludedTags=waifu&Gif=false", nil)
+	if err != nil { return "" }
+	resp, err := b.client.Do(req)
+	if err != nil { return "" }
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return "" }
+	var result waifuImageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || len(result.Items) == 0 { return "" }
+	return strings.TrimSpace(result.Items[0].URL)
+}
+
+func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
+	title := "✦ THEOGBOT"
+	caption := title + "\nYour Telegram transfers, made simple.\n\n" +
+		"① Connect account — sign in to the Telegram account that can access your source chats.\n" +
+		"② Create storage — make your private storage group, then tap the invite link and join it with the Telegram account you use here.\n" +
+		"③ Batch transfer — send post links to copy selected posts.\n" +
+		"④ Copy history — copy accessible chat history.\n\n" +
+		"Your source login and the account viewing this bot can be different. Always join storage using the invite link below the setup confirmation."
+	if tutorial {
+		caption = "✦ QUICK START GUIDE\n\n" +
+			"1. Connect account: sign in to the account that can read the source channel/group.\n" +
+			"2. Create storage: TheOGBot creates a private group and adds its uploader bot.\n" +
+			"3. Join storage: open the invite link from the account you want to use to view your files. This is important when it is different from your connected source account.\n" +
+			"4. Batch transfer: paste one or more post links from the same chat.\n" +
+			"5. Copy history: paste a chat link to copy its accessible history.\n\n" +
+			"Use Cancel transfer whenever you need to stop a running job."
+	}
+	markup := map[string]any{"inline_keyboard": [][]map[string]string{
+		{{"text":"Connect account","callback_data":"login:start"},{"text":"Create storage","callback_data":"storage:create"}},
+		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
+		{{"text":"My account","callback_data":"account:status"},{"text":"Help / tutorial","callback_data":"help"}},
+	}}
+	photo := b.welcomeImage(ctx)
+	if photo != "" {
+		err := b.call(ctx, "sendPhoto", url.Values{
+			"chat_id": {strconv.FormatInt(chatID, 10)},
+			"photo": {photo},
+			"caption": {caption},
+			"reply_markup": {mustJSON(markup)},
+		}, nil)
+		if err == nil { return }
+		b.log.Warn("welcome image send failed; using text fallback", "error", err)
+	}
+	if err := b.sendMessageMarkup(ctx, chatID, caption, markup); err != nil {
+		b.log.Warn("welcome message send failed", "chat_id", chatID, "error", err)
+	}
+}
+
 func (b *Bot) sendMenu(ctx context.Context,chatID int64,text string) {
 	markup:=map[string]any{"inline_keyboard":[][]map[string]string{
 		{{"text":"Connect account","callback_data":"login:start"},{"text":"Create storage","callback_data":"storage:create"}},
-		{{"text":"Use existing group","callback_data":"storage:set"},{"text":"Batch transfer","callback_data":"transfer:batch"}},
-		{{"text":"Copy history","callback_data":"transfer:copy"},{"text":"Account","callback_data":"account:status"}},
+		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
+		{{"text":"My account","callback_data":"account:status"},{"text":"Use existing group","callback_data":"storage:set"}},
 		{{"text":"Cancel transfer","callback_data":"job:cancel"},{"text":"Log out","callback_data":"account:logout"}},
-		{{"text":"Help","callback_data":"help"}},
+		{{"text":"Quick tutorial","callback_data":"help"}},
 	}}
 	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("menu send failed","chat_id",chatID,"error",err)}
 }
@@ -754,9 +812,9 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(userID)}
 		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("Account: %s\nDestination: %s",status,b.destinationStatus(userID)))
 	case "help":
-		_ = b.sendMessage(ctx,chatID,"Choose an action from the menu. During login, reply directly to each secure prompt. During a transfer, use the Cancel transfer button if you need to stop.") 
+		b.sendWelcome(ctx,chatID,true) 
 	case "menu:home":
-		b.sendMenu(ctx,chatID,"THEOGBOT\n\nYour transfers, in one place.\nChoose an action.")
+		b.sendWelcome(ctx,chatID,false)
 	}
 }
 func (b *Bot) onAccountEvent(userID int64,state string,err error){

@@ -4,7 +4,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 
 ## Commands
 
-- `/start`: open the interactive menu. Choose **Connect account**, reply with your phone number, then reply directly to the verification-code and optional 2-step-password prompts. You do not need to type `/code` or `/password`.
+- `/start`: open the image-backed welcome card and quick actions. Choose **Connect account**, reply with your phone number, then use the verification keypad and optional 2-step-password prompt.
 - `/login +COUNTRYCODEPHONE`: start login directly; the bot guides you through reply prompts.
 - `/code CODE` and `/password PASSWORD`: legacy login input commands remain available.
 - `/batch LINK [LINK ...]`: transfer only the explicitly linked posts, in the supplied order. Links must belong to one source chat.
@@ -13,7 +13,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 - `/createstorage`: create a private storage group with your connected Telegram account, automatically add and promote the uploader bot, and connect it.
 - `/setstorage`: choose an existing destination by forwarding a message from its group/channel in private chat.
 - `/storage`: show your saved destination and uploader access status.
-- `/info`, `/help`, `/start`, `/logout`.
+- `/info`, `/help` or `/tutorial`, `/start`, `/logout`.
 
 ## Required Railway variables
 
@@ -30,11 +30,12 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 1. Create a bot with @BotFather and set `BOT_TOKEN`.
 2. Open TheOGBot and send `/start`. Use **Connect account** and complete the private login prompts.
 3. Get `API_ID` and `API_HASH` from https://my.telegram.org/apps.
-4. Choose **Create storage** or send `/createstorage`. The connected source account creates a private supergroup, invites the exact uploader bot configured by `BOT_TOKEN`, promotes it with limited admin rights, verifies that it can post, and connects it as the personal destination.
-5. To use an existing group/channel instead, add the uploader bot with posting permission, send `/setstorage`, and forward a message from that destination.
-6. Keep credentials in Railway Variables, never in Git.
+4. Choose **Create storage** or send `/createstorage`. The connected source account creates a private supergroup, invites the exact uploader bot configured by `BOT_TOKEN`, promotes it with limited admin rights, verifies that it can post, and creates a private invite link.
+5. Tap **Join storage group** in the setup confirmation using the Telegram account you want to view your files with. This may be different from the source account connected in step 2. The bot saves the group as your personal destination.
+6. To use an existing group/channel instead, add the uploader bot with posting permission, send `/setstorage`, and forward a message from that destination.
+7. Keep credentials in Railway Variables, never in Git.
 
-**Identity matters:** the source account owns the automatically created group. The uploader bot is a separate Telegram identity; automatic setup adds it and promotes it. Source-account membership alone does not give the uploader bot access to an existing destination.
+**Identity matters:** the connected source account creates the group and grants uploader access. The Telegram account chatting with TheOGBot must also join using the generated invite link; a private `t.me/c/...` message link does not grant membership.
 
 ## Transfer behavior and limitations
 
