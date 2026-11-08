@@ -38,6 +38,7 @@ type Bot struct {
 	destMu sync.RWMutex
 	destinations map[int64]destination
 	awaitingDestination map[int64]bool
+	storageSetup map[int64]bool
 	pendingInput map[int64]string
 	otpMu sync.Mutex
 	otpInputs map[int64]*otpInput
@@ -202,7 +203,7 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 	app:=&Bot{token: token, client: &http.Client{
 		Timeout: 45*time.Second,
 		Transport: &http.Transport{Proxy:http.ProxyFromEnvironment,MaxIdleConns:100,MaxIdleConnsPerHost:20,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:10*time.Second,ResponseHeaderTimeout:40*time.Second,DialContext:(&net.Dialer{Timeout:10*time.Second,KeepAlive:30*time.Second}).DialContext},
-	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool),pendingInput:make(map[int64]string),otpInputs:make(map[int64]*otpInput)}
+	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool),storageSetup:make(map[int64]bool),pendingInput:make(map[int64]string),otpInputs:make(map[int64]*otpInput)}
 	if accounts!=nil { accounts.SetNotifier(app.onAccountEvent) }
 	return app
 }
@@ -263,7 +264,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 	case "/createstorage":
 		if msg.Chat.Type != "private" { reply = "Create storage in a private chat with this bot." } else {
 			_ = b.sendMessage(ctx,msg.Chat.ID,"Creating your private storage group and connecting the uploader bot…")
-			b.createStorageGroup(ctx,msg.From.ID,msg.Chat.ID)
+			go b.createStorageGroup(ctx,msg.From.ID,msg.Chat.ID)
 			return
 		}
 	case "/setstorage":
@@ -516,6 +517,24 @@ func (b *Bot) getDestination(userID int64) (destination, bool) {
 
 
 func (b *Bot) createStorageGroup(ctx context.Context, userID, chatID int64) {
+	b.destMu.Lock()
+	if b.storageSetup[userID] {
+		b.destMu.Unlock()
+		_ = b.sendMessage(ctx, chatID, "Storage setup is already running. Please wait for it to finish.")
+		return
+	}
+	if _, exists := b.destinations[userID]; exists {
+		b.destMu.Unlock()
+		_ = b.sendMessage(ctx, chatID, "You already have a storage group connected. Use Existing group if you want to change it.")
+		return
+	}
+	b.storageSetup[userID] = true
+	b.destMu.Unlock()
+	defer func() {
+		b.destMu.Lock()
+		delete(b.storageSetup, userID)
+		b.destMu.Unlock()
+	}()
 	if b.accounts == nil || !b.accounts.Connected(userID) {
 		_ = b.sendMessage(ctx, chatID, "Connect your Telegram account first, then create storage.")
 		return
@@ -717,7 +736,7 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 		if b.accounts==nil { _ = b.sendMessage(ctx,chatID,"MTProto login is unavailable.") } else if err:=b.accounts.Retry(ctx,userID);err!=nil { _ = b.sendMessage(ctx,chatID,"Could not restart login: "+err.Error()) } else { _ = b.sendMessage(ctx,chatID,"A fresh login attempt has started. Wait for the new Telegram code prompt.") }
 	case "storage:create":
 		_ = b.sendMessage(ctx,chatID,"Creating your private storage group and connecting the uploader bot…")
-		b.createStorageGroup(ctx,userID,chatID)
+		go b.createStorageGroup(ctx,userID,chatID)
 	case "storage:set":
 		b.destMu.Lock();b.awaitingDestination[userID]=true;b.destMu.Unlock()
 		_ = b.sendMessage(ctx,chatID,"Forward any message from your existing destination group or channel here. The configured uploader bot must already have posting permission.")
