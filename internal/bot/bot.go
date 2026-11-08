@@ -189,7 +189,7 @@ func (p *progressReporter) update(ctx context.Context, stage string, current, do
 	if done+failed+skipped>=p.total || strings.Contains(strings.ToLower(stage),"cancel") || strings.Contains(strings.ToLower(stage),"finish") {
 		markup=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Back to menu","callback_data":"menu:home"},{"text":"New batch","callback_data":"transfer:batch"}}}}
 	}
-	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text},"reply_markup":{mustJSON(markup)}}
+	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"caption":{text},"reply_markup":{mustJSON(markup)}}
 	if err:=p.bot.call(ctx,"editMessageCaption",values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
 }
 type apiResponse[T any] struct {
@@ -690,7 +690,8 @@ func (b *Bot) sendForceReply(ctx context.Context,chatID int64,text,placeholder s
 	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("force-reply prompt failed","chat_id",chatID,"error",err)}
 }
 
-// Waifu API docs: https://docs.waifu.best/docs/getting-started/\ntype waifuImageResponse struct {
+// Waifu API docs: https://docs.waifu.best/docs/getting-started/
+type waifuImageResponse struct {
 	Items []struct {
 		URL string `json:"url"`
 	} `json:"items"`
