@@ -614,7 +614,10 @@ func (b *Bot) sendPhotoMarkup(ctx context.Context, chatID int64, caption string,
 }
 
 func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error {
-	return b.sendPhotoMarkup(ctx, chatID, text, nil, nil)
+	markup := map[string]any{"inline_keyboard": [][]map[string]string{
+		{{"text": "← Back to menu", "callback_data": "menu:home"}},
+	}}
+	return b.sendPhotoMarkup(ctx, chatID, text, markup, nil)
 }
 
 func (b *Bot) sendMessageMarkup(ctx context.Context, chatID int64, text string, markup any) error {
