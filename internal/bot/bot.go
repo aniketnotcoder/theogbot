@@ -260,12 +260,18 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=100;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(jobCtx,msg.From.ID,msg.Chat.ID,fields[1],limit)}();return}}}
 	case "/cancel":
 		if b.cancelJob(msg.From.ID){reply="Cancellation requested. The current operation will stop safely."}else{reply="No active transfer to cancel."}
+	case "/createstorage":
+		if msg.Chat.Type != "private" { reply = "Create storage in a private chat with this bot." } else {
+			_ = b.sendMessage(ctx,msg.Chat.ID,"Creating your private storage group and connecting the uploader bot…")
+			b.createStorageGroup(ctx,msg.From.ID,msg.Chat.ID)
+			return
+		}
 	case "/setstorage":
 		if msg.Chat.Type != "private" { reply = "Configure your destination in a private chat with this bot." } else {
 			b.destMu.Lock()
 			b.awaitingDestination[msg.From.ID] = true
 			b.destMu.Unlock()
-			reply = "Forward any message from your destination group/channel to this bot. The uploader bot must already be a member with posting permission."
+			reply = "Forward any message from your existing destination group/channel to this bot. The uploader bot must already be a member with posting permission."
 		}
 	case "/storage":
 		if b.storage == nil { reply = "Storage uploader is not configured." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else if d, ok := b.getDestination(msg.From.ID); ok { reply = fmt.Sprintf("Uploader: connected\nYour destination: %s\nChat ID: %d\nAccess: visible to uploader bot; posting rights are checked on transfer", d.Title, d.ChatID) } else { reply = "Uploader: connected\nNo personal destination configured. Send /setstorage, then forward a message from your destination group/channel." }
@@ -508,6 +514,40 @@ func (b *Bot) getDestination(userID int64) (destination, bool) {
 	return d, ok
 }
 
+
+func (b *Bot) createStorageGroup(ctx context.Context, userID, chatID int64) {
+	if b.accounts == nil || !b.accounts.Connected(userID) {
+		_ = b.sendMessage(ctx, chatID, "Connect your Telegram account first, then create storage.")
+		return
+	}
+	if b.storage == nil { _ = b.sendMessage(ctx, chatID, "Storage uploader is not configured."); return }
+	setupCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	group, err := b.accounts.CreateStorageGroup(setupCtx, userID, b.username)
+	if err != nil { _ = b.sendMessage(ctx, chatID, "Could not finish storage setup: "+err.Error()); return }
+	peer, err := b.storage.ResolvePeer(setupCtx, strconv.FormatInt(group.ChatID, 10))
+	if err != nil {
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Your group was created and the uploader bot was added, but the connection check failed: %v. Try Create storage again after a moment.", err))
+		return
+	}
+	if _, err := b.storage.SendTextTo(setupCtx, peer, "TheOGBot storage is connected. Your transferred files will appear here."); err != nil {
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Your group was created and the uploader bot was promoted, but the final connection check failed: %v. Try Create storage again after a moment.", err))
+		return
+	}
+	b.destMu.Lock()
+	b.destinations[userID] = destination{ChatID: group.ChatID, Title: group.Title}
+	delete(b.awaitingDestination, userID)
+	b.destMu.Unlock()
+	groupURL := fmt.Sprintf("https://t.me/c/%d/1", -group.ChatID-1000000000000)
+	_ = b.sendMessageMarkup(ctx, chatID,
+		fmt.Sprintf("Storage is ready.\n\n%s\nThe uploader bot is an admin and the connection has been verified.", group.Title),
+		map[string]any{"inline_keyboard": [][]map[string]string{
+			{{"text":"Open storage group","url":groupURL}},
+			{{"text":"Back to menu","callback_data":"menu:home"}},
+		}},
+	)
+}
+
 func (b *Bot) captureForwardedDestination(ctx context.Context, msg *incomingMessage) bool {
 	b.destMu.Lock()
 	pending := b.awaitingDestination[msg.From.ID]
@@ -614,10 +654,11 @@ func (b *Bot) sendForceReply(ctx context.Context,chatID int64,text,placeholder s
 }
 func (b *Bot) sendMenu(ctx context.Context,chatID int64,text string) {
 	markup:=map[string]any{"inline_keyboard":[][]map[string]string{
-		{{"text":"Connect account","callback_data":"login:start"},{"text":"Set destination","callback_data":"storage:set"}},
-		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
-		{{"text":"Account","callback_data":"account:status"},{"text":"Help","callback_data":"help"}},
+		{{"text":"Connect account","callback_data":"login:start"},{"text":"Create storage","callback_data":"storage:create"}},
+		{{"text":"Use existing group","callback_data":"storage:set"},{"text":"Batch transfer","callback_data":"transfer:batch"}},
+		{{"text":"Copy history","callback_data":"transfer:copy"},{"text":"Account","callback_data":"account:status"}},
 		{{"text":"Cancel transfer","callback_data":"job:cancel"},{"text":"Log out","callback_data":"account:logout"}},
+		{{"text":"Help","callback_data":"help"}},
 	}}
 	if err:=b.sendMessageMarkup(ctx,chatID,text,markup);err!=nil{b.log.Warn("menu send failed","chat_id",chatID,"error",err)}
 }
@@ -674,9 +715,12 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 		_ = b.sendMessage(ctx,chatID,"Login cancelled. You can start again whenever you're ready.")
 	case "login:retry":
 		if b.accounts==nil { _ = b.sendMessage(ctx,chatID,"MTProto login is unavailable.") } else if err:=b.accounts.Retry(ctx,userID);err!=nil { _ = b.sendMessage(ctx,chatID,"Could not restart login: "+err.Error()) } else { _ = b.sendMessage(ctx,chatID,"A fresh login attempt has started. Wait for the new Telegram code prompt.") }
+	case "storage:create":
+		_ = b.sendMessage(ctx,chatID,"Creating your private storage group and connecting the uploader bot…")
+		b.createStorageGroup(ctx,userID,chatID)
 	case "storage:set":
 		b.destMu.Lock();b.awaitingDestination[userID]=true;b.destMu.Unlock()
-		_ = b.sendMessage(ctx,chatID,"Forward any message from your destination group or channel here. The configured uploader bot must already have posting permission.")
+		_ = b.sendMessage(ctx,chatID,"Forward any message from your existing destination group or channel here. The configured uploader bot must already have posting permission.")
 	case "transfer:batch":
 		b.setPendingInput(userID,"batch")
 		b.sendForceReply(ctx,chatID,"Send one or more Telegram post links, separated by spaces or new lines.","Telegram post links")

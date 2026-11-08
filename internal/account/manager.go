@@ -134,6 +134,67 @@ func(a interactiveAuth)Password(ctx context.Context)(string,error){
 }
 func(interactiveAuth)AcceptTermsOfService(context.Context,tg.HelpTermsOfService)error{return fmt.Errorf("Telegram requires account signup; existing-account login only")}
 func(interactiveAuth)SignUp(context.Context)(auth.UserInfo,error){return auth.UserInfo{},fmt.Errorf("new Telegram account signup is not supported")}
+
+type StorageGroup struct {
+	ChatID int64
+	Title string
+}
+
+// CreateStorageGroup creates a private supergroup from the connected source
+// account, invites the configured uploader bot, and grants it limited admin rights.
+func (m *Manager) CreateStorageGroup(ctx context.Context, userID int64, botUsername string) (StorageGroup, error) {
+	m.mu.Lock()
+	a := m.users[userID]
+	if a == nil || a.state != "connected" || a.client == nil {
+		m.mu.Unlock()
+		return StorageGroup{}, errors.New("connect your Telegram account first")
+	}
+	api := a.client.API()
+	m.mu.Unlock()
+
+	botUsername = strings.TrimPrefix(strings.TrimSpace(botUsername), "@")
+	if botUsername == "" { return StorageGroup{}, errors.New("the uploader bot username is unavailable") }
+	resolved, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: botUsername})
+	if err != nil { return StorageGroup{}, fmt.Errorf("find the uploader bot: %w", err) }
+	var botUser *tg.User
+	for _, item := range resolved.Users {
+		if user, ok := item.(*tg.User); ok && !user.Deleted && strings.EqualFold(user.Username, botUsername) {
+			botUser = user
+			break
+		}
+	}
+	if botUser == nil || botUser.AccessHash == 0 { return StorageGroup{}, errors.New("could not resolve the uploader bot account") }
+
+	title := "TheOGBot Storage"
+	created, err := api.ChannelsCreateChannel(ctx, &tg.ChannelsCreateChannelRequest{
+		Megagroup: true, Title: title, About: "Private storage group for TheOGBot transfers.",
+	})
+	if err != nil { return StorageGroup{}, fmt.Errorf("create the storage group: %w", err) }
+	var chats []tg.ChatClass
+	switch value := created.(type) {
+	case *tg.Updates: chats = value.Chats
+	case *tg.UpdatesCombined: chats = value.Chats
+	default: return StorageGroup{}, fmt.Errorf("Telegram returned an unexpected group creation response: %T", created)
+	}
+	var channel *tg.Channel
+	for _, item := range chats {
+		if candidate, ok := item.(*tg.Channel); ok && candidate.Megagroup { channel = candidate; break }
+	}
+	if channel == nil { return StorageGroup{}, errors.New("Telegram created the group but did not return its channel details") }
+	inputChannel := &tg.InputChannel{ChannelID: channel.ID, AccessHash: channel.AccessHash}
+	inputBot := &tg.InputUser{UserID: botUser.ID, AccessHash: botUser.AccessHash}
+	if _, err := api.ChannelsInviteToChannel(ctx, &tg.ChannelsInviteToChannelRequest{Channel: inputChannel, Users: []tg.InputUserClass{inputBot}}); err != nil {
+		return StorageGroup{}, fmt.Errorf("the group was created, but Telegram could not add the uploader bot: %w", err)
+	}
+	if _, err := api.ChannelsEditAdmin(ctx, &tg.ChannelsEditAdminRequest{
+		Channel: inputChannel, UserID: inputBot,
+		AdminRights: tg.ChatAdminRights{ChangeInfo: true}, Rank: "Storage manager",
+	}); err != nil {
+		return StorageGroup{}, fmt.Errorf("the uploader bot joined, but could not be promoted to admin: %w", err)
+	}
+	return StorageGroup{ChatID: -1000000000000 - channel.ID, Title: title}, nil
+}
+
 func(m *Manager)API(userID int64)(*tg.Client,bool){
 	m.mu.Lock();defer m.mu.Unlock()
 	a:=m.users[userID]
