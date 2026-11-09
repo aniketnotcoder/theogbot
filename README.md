@@ -15,6 +15,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 - `/storage`: open storage management. Switch the active destination, create another named group, connect an existing group, or forget a saved entry (this does not delete the Telegram group).
 - `/info`, `/help` or `/tutorial`, `/start`, `/logout`.
 - `/backup`: send the raw bbolt database file to the configured administrator. Private chat only; sender ID must match `ADMIN_ID`.
+- `/settutorial`: administrator-only setup command. Send it in private chat, then upload the tutorial video; the bot persists Telegram's `file_id` in bbolt and sends that video from `/help`, `/tutorial`, and the Help / Tutorial button.
 
 ## Required Railway variables
 
@@ -26,7 +27,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 | `STORAGE_TARGET` | No | Optional shared fallback destination (private numeric ID). Prefer `/setstorage` for per-user destinations. |
 | `TEMP_DIR` | No | Writable temporary directory; defaults to the OS temp directory. |
 | `STORAGE_DB_PATH` | No | bbolt database path; defaults to `data/theogbot.db`. On Railway, mount a persistent volume at `/data` and set `/data/theogbot.db`. |
-| `ADMIN_ID` | No | Telegram numeric user ID authorized to use `/backup`. Leave unset to keep database backup disabled. |
+| `ADMIN_ID` | No | Telegram numeric user ID authorized to use `/backup`. Leave unset to keep administrator-only backup and tutorial-video management disabled. |
 
 ## Telegram setup
 
