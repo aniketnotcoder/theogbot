@@ -81,9 +81,12 @@ func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total
 	var sent sentMessage
 	markup := map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "Cancel transfer", "callback_data": "job:cancel"}}}}
 	caption := formatProgress(label, "Preparing", 0, total, 0, 0, 0, 0, 0, 0, 0)
-	if err := b.sendPhotoMarkup(ctx, chatID, caption, markup, &sent); err != nil {
+	if err := b.sendMessageMarkup(ctx, chatID, caption, markup); err != nil {
 		return nil, err
 	}
+	// Progress updates are text-only; keep one compact message instead of another image card.
+	sent.MessageID = 0
+	return &progressReporter{bot: b, chatID: chatID, label: label, total: total, started: time.Now()}, nil
 	return &progressReporter{bot: b, chatID: chatID, messageID: sent.MessageID, label: label, total: total, started: time.Now()}, nil
 }
 
@@ -189,8 +192,8 @@ func (p *progressReporter) update(ctx context.Context, stage string, current, do
 	if done+failed+skipped>=p.total || strings.Contains(strings.ToLower(stage),"cancel") || strings.Contains(strings.ToLower(stage),"finish") {
 		markup=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Back to menu","callback_data":"menu:home"},{"text":"New batch","callback_data":"transfer:batch"}}}}
 	}
-	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"caption":{text},"reply_markup":{mustJSON(markup)}}
-	if err:=p.bot.call(ctx,"editMessageCaption",values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
+	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text},"reply_markup":{mustJSON(markup)}}
+	if err:=p.bot.call(ctx,"editMessageText",values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
 }
 type apiResponse[T any] struct {
 	OK bool `json:"ok"`
@@ -614,14 +617,19 @@ func (b *Bot) sendPhotoMarkup(ctx context.Context, chatID int64, caption string,
 }
 
 func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error {
-	markup := map[string]any{"inline_keyboard": [][]map[string]string{
-		{{"text": "← Back to menu", "callback_data": "menu:home"}},
-	}}
-	return b.sendPhotoMarkup(ctx, chatID, text, markup, nil)
+	return b.call(ctx, "sendMessage", url.Values{
+		"chat_id": {strconv.FormatInt(chatID, 10)},
+		"text": {text},
+	}, nil)
 }
 
 func (b *Bot) sendMessageMarkup(ctx context.Context, chatID int64, text string, markup any) error {
-	return b.sendPhotoMarkup(ctx, chatID, text, markup, nil)
+	values := url.Values{
+		"chat_id": {strconv.FormatInt(chatID, 10)},
+		"text": {text},
+	}
+	if markup != nil { values.Set("reply_markup", mustJSON(markup)) }
+	return b.call(ctx, "sendMessage", values, nil)
 }
 func otpKeyboard() map[string]any {
 	return map[string]any{"inline_keyboard":[][]map[string]string{
@@ -697,13 +705,15 @@ func (b *Bot) sendForceReply(ctx context.Context,chatID int64,text,placeholder s
 type waifuImageResponse struct {
 	Items []struct {
 		URL string `json:"url"`
+		Width int `json:"width"`
+		Height int `json:"height"`
 	} `json:"items"`
 }
 
 func (b *Bot) welcomeImage(ctx context.Context) string {
 	imageCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(imageCtx, http.MethodGet, "https://api.waifu.best/images?IsNsfw=False&IncludedTags=waifu&PageSize=1", nil)
+	req, err := http.NewRequestWithContext(imageCtx, http.MethodGet, "https://api.waifu.best/images?IsNsfw=False&IncludedTags=waifu&Orientation=LANDSCAPE&PageSize=20", nil)
 	if err != nil { return "" }
 	resp, err := b.client.Do(req)
 	if err != nil { return "" }
@@ -711,7 +721,12 @@ func (b *Bot) welcomeImage(ctx context.Context) string {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return "" }
 	var result waifuImageResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || len(result.Items) == 0 { return "" }
-	return strings.TrimSpace(result.Items[0].URL)
+	// Do not let portrait or near-square artwork turn short dialogs into tall cards.
+	for _, item := range result.Items {
+		if item.Width <= 0 || item.Height <= 0 || float64(item.Width)/float64(item.Height) < 1.25 { continue }
+		if itemURL := strings.TrimSpace(item.URL); itemURL != "" { return itemURL }
+	}
+	return ""
 }
 
 func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
@@ -736,7 +751,7 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
 		{{"text":"My account","callback_data":"account:status"},{"text":"Help / tutorial","callback_data":"help"}},
 	}}
-	if err := b.sendMessageMarkup(ctx, chatID, caption, markup); err != nil {
+	if err := b.sendPhotoMarkup(ctx, chatID, caption, markup, nil); err != nil {
 		b.log.Warn("welcome message send failed", "chat_id", chatID, "error", err)
 	}
 }

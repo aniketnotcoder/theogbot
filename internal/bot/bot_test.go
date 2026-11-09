@@ -173,7 +173,7 @@ func TestOTPKeyboardHasTenDigitsAndActions(t *testing.T) {
 }
 
 func TestWaifuImageResponseDecodesDocumentedItems(t *testing.T) {
-	raw := `{"items":[{"url":"https://cdn.example/waifu.jpg"}]}`
+	raw := `{"items":[{"url":"https://cdn.example/waifu.jpg","width":1600,"height":900}]}`
 	var got waifuImageResponse
 	if err := json.Unmarshal([]byte(raw), &got); err != nil { t.Fatal(err) }
 	if len(got.Items) != 1 || got.Items[0].URL != "https://cdn.example/waifu.jpg" {
@@ -185,4 +185,18 @@ func TestWaifuImageResponseAllowsEmptyFallback(t *testing.T) {
 	var got waifuImageResponse
 	if err := json.Unmarshal([]byte(`{"items":[]}`), &got); err != nil { t.Fatal(err) }
 	if len(got.Items) != 0 { t.Fatalf("expected empty image list, got %+v", got) }
+}
+
+func TestWaifuImageResponseSkipsPortraitAndNearSquare(t *testing.T) {
+	raw := `{"items":[{"url":"https://cdn.example/portrait.jpg","width":900,"height":1600},{"url":"https://cdn.example/square.jpg","width":1000,"height":1000},{"url":"https://cdn.example/landscape.jpg","width":1600,"height":900}]}`
+	var got waifuImageResponse
+	if err := json.Unmarshal([]byte(raw), &got); err != nil { t.Fatal(err) }
+	var selected string
+	for _, item := range got.Items {
+		if item.Width > 0 && item.Height > 0 && float64(item.Width)/float64(item.Height) >= 1.25 {
+			selected = item.URL
+			break
+		}
+	}
+	if selected != "https://cdn.example/landscape.jpg" { t.Fatalf("selected image = %q, want landscape image", selected) }
 }
