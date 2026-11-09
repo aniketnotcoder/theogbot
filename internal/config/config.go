@@ -13,6 +13,7 @@ type Config struct {
 	APIHash string
 	StorageTarget string
 	TempDir string
+	StorageDBPath string
 }
 
 func Load() (Config, error) {
@@ -21,6 +22,7 @@ func Load() (Config, error) {
 		APIHash: strings.TrimSpace(os.Getenv("API_HASH")),
 		StorageTarget: strings.TrimSpace(os.Getenv("STORAGE_TARGET")),
 		TempDir: strings.TrimSpace(os.Getenv("TEMP_DIR")),
+		StorageDBPath: strings.TrimSpace(os.Getenv("STORAGE_DB_PATH")),
 	}
 	if cfg.BotToken == "" { return Config{}, errors.New("BOT_TOKEN is required") }
 	rawID := os.Getenv("API_ID")
@@ -29,5 +31,6 @@ func Load() (Config, error) {
 	if err != nil || id <= 0 { return Config{}, errors.New("API_ID must be a positive integer") }
 	cfg.APIID = id
 	if cfg.TempDir == "" { cfg.TempDir = os.TempDir() }
+	if cfg.StorageDBPath == "" { cfg.StorageDBPath = "data/theogbot.db" }
 	return cfg, nil
 }

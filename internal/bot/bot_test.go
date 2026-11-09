@@ -207,12 +207,12 @@ func TestStorageHistorySwitchAndForget(t *testing.T) {
 	second:=destination{ChatID:-100202,Title:"Archive"}
 	b.addStorage(7,first);b.addStorage(7,second)
 	if active,ok:=b.getDestination(7);!ok||active.ChatID!=second.ChatID{t.Fatalf("latest storage should be active: %+v %v",active,ok)}
-	if !b.selectStorage(7,first.ChatID){t.Fatal("expected first storage to be selectable")}
+	if ok,err:=b.selectStorage(7,first.ChatID);err!=nil||!ok{t.Fatalf("expected first storage to be selectable: %v %v",ok,err)}
 	if active,_:=b.getDestination(7);active.ChatID!=first.ChatID{t.Fatalf("active storage = %+v, want first",active)}
 	if got:=len(b.getStorageHistory(7));got!=2{t.Fatalf("history length = %d, want 2",got)}
-	if !b.forgetStorage(7,first.ChatID){t.Fatal("expected active storage to be forgettable")}
+	if ok,err:=b.forgetStorage(7,first.ChatID);err!=nil||!ok{t.Fatalf("expected active storage to be forgettable: %v %v",ok,err)}
 	if active,ok:=b.getDestination(7);!ok||active.ChatID!=second.ChatID{t.Fatalf("forgetting active should select remaining storage: %+v %v",active,ok)}
-	if b.forgetStorage(7,first.ChatID){t.Fatal("forgotten storage should not be found twice")}
+	if ok,err:=b.forgetStorage(7,first.ChatID);err!=nil||ok{t.Fatalf("forgotten storage should not be found twice: %v %v",ok,err)}
 }
 func TestAddStorageUpdatesExistingEntryWithoutDuplicate(t *testing.T) {
 	b:=&Bot{destinations:map[int64]destination{},storageHistory:map[int64][]destination{}}

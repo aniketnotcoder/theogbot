@@ -11,6 +11,7 @@ import (
 	"github.com/aniketnotcoder/theogbot/internal/bot"
 	"github.com/aniketnotcoder/theogbot/internal/config"
 	"github.com/aniketnotcoder/theogbot/internal/storage"
+	"github.com/aniketnotcoder/theogbot/internal/storageprefs"
 )
 
 func main() {
@@ -23,6 +24,10 @@ func main() {
 	accounts := account.NewManager(cfg.APIID, cfg.APIHash)
 	app := bot.New(cfg.BotToken, logger, accounts)
 	app.SetTempDir(cfg.TempDir)
+	prefs, err := storageprefs.Open(cfg.StorageDBPath)
+	if err != nil { logger.Error("storage preferences database error", "error", err); os.Exit(1) }
+	defer prefs.Close()
+	if err := app.SetStoragePrefs(prefs); err != nil { logger.Error("load storage preferences", "error", err); os.Exit(1) }
 
 	// Storage upload uses an independent bot-authenticated MTProto client.
 	// Start it even without a shared target: /setstorage assigns destinations per user.

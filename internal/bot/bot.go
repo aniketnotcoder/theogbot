@@ -19,6 +19,7 @@ import (
 	"github.com/aniketnotcoder/theogbot/internal/media"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/aniketnotcoder/theogbot/internal/storage"
+	"github.com/aniketnotcoder/theogbot/internal/storageprefs"
 	"github.com/gotd/td/tg"
 )
 
@@ -38,6 +39,7 @@ type Bot struct {
 	destMu sync.RWMutex
 	destinations map[int64]destination
 	storageHistory map[int64][]destination
+	storagePrefs *storageprefs.Store
 	awaitingDestination map[int64]bool
 	storageSetup map[int64]bool
 	pendingInput map[int64]string
@@ -218,6 +220,18 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 
 func (b *Bot) SetStorage(client *storage.Client) { b.storage = client }
 func (b *Bot) SetTempDir(path string) { b.tempDir = path }
+func (b *Bot) SetStoragePrefs(store *storageprefs.Store) error {
+	if store == nil { return fmt.Errorf("storage preferences database is nil") }
+	records, err := store.Snapshot(); if err != nil { return err }
+	b.destMu.Lock(); defer b.destMu.Unlock(); b.storagePrefs = store
+	for userID, record := range records {
+		items:=make([]destination,0,len(record.Groups))
+		for _,d:=range record.Groups { items=append(items,destination{ChatID:d.ChatID,Title:d.Title,Username:d.Username}) }
+		b.storageHistory[userID]=items
+		for _,d:=range items { if d.ChatID==record.ActiveChatID { b.destinations[userID]=d; break } }
+	}
+	return nil
+}
 
 func (b *Bot) Run(ctx context.Context) error {
 	var me botIdentity
@@ -524,41 +538,27 @@ func (b *Bot) getDestination(userID int64) (destination, bool) {
 	return d, ok
 }
 
-func (b *Bot) addStorage(userID int64, d destination) {
-	b.destMu.Lock()
-	defer b.destMu.Unlock()
-	items := b.storageHistory[userID]
-	for i := range items {
-		if items[i].ChatID == d.ChatID {
-			items[i] = d
-			b.storageHistory[userID] = items
-			b.destinations[userID] = d
-			return
-		}
-	}
-	b.storageHistory[userID] = append(items,d)
-	b.destinations[userID] = d
-}
-func (b *Bot) getStorageHistory(userID int64) []destination {
-	b.destMu.RLock(); defer b.destMu.RUnlock()
-	return append([]destination(nil),b.storageHistory[userID]...)
-}
-func (b *Bot) selectStorage(userID,chatID int64) bool {
+func (b *Bot) addStorage(userID int64, d destination) error {
 	b.destMu.Lock(); defer b.destMu.Unlock()
-	for _,d:=range b.storageHistory[userID] { if d.ChatID==chatID { b.destinations[userID]=d; return true } }
-	return false
-}
-func (b *Bot) forgetStorage(userID,chatID int64) bool {
-	b.destMu.Lock(); defer b.destMu.Unlock()
+	if b.storagePrefs!=nil { if err:=b.storagePrefs.Add(userID,storageprefs.Destination{ChatID:d.ChatID,Title:d.Title,Username:d.Username});err!=nil{return err} }
 	items:=b.storageHistory[userID]
-	kept:=make([]destination,0,len(items));found:=false
-	for _,d:=range items { if d.ChatID==chatID {found=true;continue};kept=append(kept,d) }
-	if !found{return false}
+	for i:=range items { if items[i].ChatID==d.ChatID {items[i]=d;b.storageHistory[userID]=items;b.destinations[userID]=d;return nil} }
+	b.storageHistory[userID]=append(items,d);b.destinations[userID]=d;return nil
+}
+func (b *Bot) getStorageHistory(userID int64) []destination { b.destMu.RLock();defer b.destMu.RUnlock();return append([]destination(nil),b.storageHistory[userID]...) }
+func (b *Bot) selectStorage(userID,chatID int64)(bool,error){
+	b.destMu.Lock();defer b.destMu.Unlock();var selected destination;found:=false
+	for _,d:=range b.storageHistory[userID]{if d.ChatID==chatID{selected=d;found=true;break}}
+	if !found{return false,nil};if b.storagePrefs!=nil{if err:=b.storagePrefs.Select(userID,chatID);err!=nil{return false,err}}
+	b.destinations[userID]=selected;return true,nil
+}
+func (b *Bot) forgetStorage(userID,chatID int64)(bool,error){
+	b.destMu.Lock();defer b.destMu.Unlock();items:=b.storageHistory[userID];kept:=make([]destination,0,len(items));found:=false
+	for _,d:=range items{if d.ChatID==chatID{found=true;continue};kept=append(kept,d)}
+	if !found{return false,nil};if b.storagePrefs!=nil{if err:=b.storagePrefs.Forget(userID,chatID);err!=nil{return false,err}}
 	b.storageHistory[userID]=kept
-	if active,ok:=b.destinations[userID];ok&&active.ChatID==chatID {
-		if len(kept)==0 {delete(b.destinations,userID)} else {b.destinations[userID]=kept[len(kept)-1]}
-	}
-	return true
+	if active,ok:=b.destinations[userID];ok&&active.ChatID==chatID{if len(kept)==0{delete(b.destinations,userID)}else{b.destinations[userID]=kept[len(kept)-1]}}
+	return true,nil
 }
 
 
@@ -594,7 +594,11 @@ func (b *Bot) createStorageGroup(ctx context.Context, userID, chatID int64, titl
 		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Your group was created and the uploader bot was promoted, but the final connection check failed: %v. Try Create storage again after a moment.", err))
 		return
 	}
-	b.addStorage(userID,destination{ChatID:group.ChatID,Title:group.Title})
+	if err := b.addStorage(userID,destination{ChatID:group.ChatID,Title:group.Title}); err != nil {
+		_ = b.sendMessage(ctx,chatID,"The group was created, but I could not save it. Check the bot data volume and try again.")
+		b.log.Error("persist created storage destination","user_id",userID,"error",err)
+		return
+	}
 	b.destMu.Lock()
 	delete(b.awaitingDestination,userID)
 	b.destMu.Unlock()
@@ -629,7 +633,11 @@ func (b *Bot) captureForwardedDestination(ctx context.Context, msg *incomingMess
 	title := strings.TrimSpace(forwardedChat.Title)
 	if title=="" { title=forwardedChat.Username }
 	if title=="" { title=strconv.FormatInt(forwardedChat.ID,10) }
-	b.addStorage(msg.From.ID,destination{ChatID:forwardedChat.ID,Title:title,Username:forwardedChat.Username})
+	if err:=b.addStorage(msg.From.ID,destination{ChatID:forwardedChat.ID,Title:title,Username:forwardedChat.Username});err!=nil {
+		_ = b.sendMessage(ctx,msg.Chat.ID,"I verified the group, but could not save it. Check persistent storage and try again.")
+		b.log.Error("persist existing destination","user_id",msg.From.ID,"error",err)
+		return true
+	}
 	_ = b.sendMessage(ctx,msg.Chat.ID,fmt.Sprintf("Destination saved for your account.\nName: %s\nChat ID: %d\nUploader bot can see this chat. Posting permission will be checked on transfer.",title,forwardedChat.ID))
 	return true
 }
@@ -905,12 +913,12 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	if b.handleOTPCallback(ctx,q,chatID,userID) { return }
 	if strings.HasPrefix(q.Data,"storage:use:") {
 		id,err:=strconv.ParseInt(strings.TrimPrefix(q.Data,"storage:use:"),10,64)
-		if err==nil&&b.selectStorage(userID,id){b.sendStorageManager(ctx,userID,chatID)}else{_ = b.sendMessage(ctx,chatID,"That storage is no longer in your saved list.")}
+		if err!=nil { _ = b.sendMessage(ctx,chatID,"Could not save that selection. Please try again."); b.log.Error("persist active storage selection","user_id",userID,"error",err) } else if ok,selectErr:=b.selectStorage(userID,id);selectErr!=nil { _ = b.sendMessage(ctx,chatID,"Could not save that selection. Please try again."); b.log.Error("persist active storage selection","user_id",userID,"error",selectErr) } else if ok { b.sendStorageManager(ctx,userID,chatID) } else { _ = b.sendMessage(ctx,chatID,"That storage is no longer in your saved list.") }
 		return
 	}
 	if strings.HasPrefix(q.Data,"storage:forget:") {
 		id,err:=strconv.ParseInt(strings.TrimPrefix(q.Data,"storage:forget:"),10,64)
-		if err==nil&&b.forgetStorage(userID,id){b.sendStorageManager(ctx,userID,chatID)}else{_ = b.sendMessage(ctx,chatID,"That storage is no longer in your saved list.")}
+		if err!=nil { _ = b.sendMessage(ctx,chatID,"Could not remove that saved entry. Please try again."); b.log.Error("persist storage removal","user_id",userID,"error",err) } else if ok,forgetErr:=b.forgetStorage(userID,id);forgetErr!=nil { _ = b.sendMessage(ctx,chatID,"Could not remove that saved entry. Please try again."); b.log.Error("persist storage removal","user_id",userID,"error",forgetErr) } else if ok { b.sendStorageManager(ctx,userID,chatID) } else { _ = b.sendMessage(ctx,chatID,"That storage is no longer in your saved list.") }
 		return
 	}
 	switch q.Data {

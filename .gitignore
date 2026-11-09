@@ -5,3 +5,9 @@ sessions/
 tmp/
 bin/
 *.log
+
+# Embedded persistent metadata database
+/data/
+*.db
+*.db-shm
+*.db-wal
