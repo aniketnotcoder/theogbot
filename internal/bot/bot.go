@@ -45,6 +45,7 @@ type Bot struct {
 	destinations map[int64]destination
 	storageHistory map[int64][]destination
 	storagePrefs *storageprefs.Store
+	awaitingTutorialVideo bool
 	awaitingDestination map[int64]bool
 	storageSetup map[int64]bool
 	pendingInput map[int64]string
@@ -77,6 +78,7 @@ type incomingMessage struct {
 	Chat struct { ID int64 `json:"id"`; Type string `json:"type"` } `json:"chat"`
 	From struct { ID int64 `json:"id"` } `json:"from"`
 	ForwardOrigin *forwardOrigin `json:"forward_origin"`
+	Video *struct { FileID string `json:"file_id"` } `json:"video"`
 }
 type destination struct { ChatID int64; Title string; Username string }
 type otpInput struct { ChatID int64; MessageID int64; Code string; Photo bool }
@@ -258,7 +260,9 @@ func (b *Bot) Run(ctx context.Context) error {
 }
 
 func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
-	text:=strings.TrimSpace(msg.Text);if msg.Chat.ID==0{return};if b.captureForwardedDestination(ctx,msg) { return };if text=="" { return }
+	text:=strings.TrimSpace(msg.Text);if msg.Chat.ID==0{return}
+	if msg.Chat.Type=="private" && msg.Video!=nil && msg.Video.FileID!="" && b.handleTutorialVideo(ctx,msg) { return }
+	if b.captureForwardedDestination(ctx,msg) { return };if text=="" { return }
 	if msg.Chat.Type=="private" && !strings.HasPrefix(text,"/") && b.handlePendingInput(ctx,msg,text) { return }
 	fields:=strings.Fields(text);command:=strings.ToLower(fields[0]);if i:=strings.IndexByte(command,'@');i>=0{command=command[:i]}
 	var reply string
@@ -306,6 +310,16 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		return
 	case "/logout":
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
+	case "/settutorial":
+		adminID, parseErr := strconv.ParseInt(strings.TrimSpace(os.Getenv("ADMIN_ID")), 10, 64)
+		if msg.Chat.Type != "private" || parseErr != nil || adminID <= 0 || msg.From.ID != adminID {
+			reply = "This command is available only to the configured administrator in private chat."
+		} else {
+			b.destMu.Lock()
+			b.awaitingTutorialVideo = true
+			b.destMu.Unlock()
+			reply = "Send the tutorial video as your next message. I'll save its Telegram file ID, so it survives restarts without storing the video on Railway."
+		}
 	case "/backup":
 		if msg.Chat.Type != "private" {
 			reply = "For security, use /backup in a private chat with this bot."
@@ -820,6 +834,38 @@ func (b *Bot) waifuImage(ctx context.Context, orientation string) string {
 func (b *Bot) welcomeImage(ctx context.Context) string { return b.waifuImage(ctx,"LANDSCAPE") }
 func (b *Bot) progressImage(ctx context.Context) string { return b.waifuImage(ctx,"PORTRAIT") }
 
+func (b *Bot) sendVideoMarkup(ctx context.Context, chatID int64, fileID, caption string, markup any) error {
+	return b.call(ctx, "sendVideo", url.Values{
+		"chat_id": {strconv.FormatInt(chatID, 10)},
+		"video": {fileID},
+		"caption": {caption},
+		"reply_markup": {mustJSON(markup)},
+	}, nil)
+}
+
+func (b *Bot) handleTutorialVideo(ctx context.Context, msg *incomingMessage) bool {
+	b.destMu.RLock()
+	awaiting, prefs := b.awaitingTutorialVideo, b.storagePrefs
+	b.destMu.RUnlock()
+	if !awaiting { return false }
+	adminID, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("ADMIN_ID")), 10, 64)
+	if err != nil || adminID <= 0 || msg.From.ID != adminID { return false }
+	if prefs == nil {
+		_ = b.sendMessage(ctx, msg.Chat.ID, "Tutorial storage is unavailable. Please try again after database initialization.")
+		return true
+	}
+	if err := prefs.SetTutorialVideoID(msg.Video.FileID); err != nil {
+		b.log.Error("save tutorial video ID failed", "admin_id", msg.From.ID, "error", err)
+		_ = b.sendMessage(ctx, msg.Chat.ID, "Could not save the tutorial video. Please try again.")
+		return true
+	}
+	b.destMu.Lock()
+	b.awaitingTutorialVideo = false
+	b.destMu.Unlock()
+	_ = b.sendMessage(ctx, msg.Chat.ID, "Tutorial video saved. It will now be sent when users open Help / Tutorial.")
+	return true
+}
+
 func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 	title := "✦ THEOGBOT"
 	caption := title + "\nYour Telegram transfers, made simple.\n\n" +
@@ -842,6 +888,18 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
 		{{"text":"My account","callback_data":"account:status"},{"text":"Help / tutorial","callback_data":"help"}},
 	}}
+	if tutorial {
+		b.destMu.RLock()
+		prefs := b.storagePrefs
+		b.destMu.RUnlock()
+		if prefs != nil {
+			if fileID, err := prefs.TutorialVideoID(); err == nil && fileID != "" {
+				if sendErr := b.sendVideoMarkup(ctx, chatID, fileID, caption, markup); sendErr == nil { return } else {
+					b.log.Warn("tutorial video delivery failed; using text/image fallback", "chat_id", chatID, "error", sendErr)
+				}
+			}
+		}
+	}
 	if err := b.sendPhotoMarkup(ctx, chatID, caption, markup, nil); err != nil {
 		b.log.Warn("welcome message send failed", "chat_id", chatID, "error", err)
 	}
