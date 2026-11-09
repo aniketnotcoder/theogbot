@@ -3,3 +3,13 @@ import("path/filepath";"testing")
 func TestStoragePreferencesSurviveReopenAndKeepActiveSelection(t *testing.T){path:=filepath.Join(t.TempDir(),"data","prefs.db");db,err:=Open(path);if err!=nil{t.Fatal(err)};if err:=db.Add(10,Destination{ChatID:-1001,Title:"Main"});err!=nil{t.Fatal(err)};if err:=db.Add(10,Destination{ChatID:-1002,Title:"Archive",Username:"archive"});err!=nil{t.Fatal(err)};if err:=db.Select(10,-1001);err!=nil{t.Fatal(err)};if err:=db.Close();err!=nil{t.Fatal(err)};db,err=Open(path);if err!=nil{t.Fatal(err)};defer db.Close();got,err:=db.Snapshot();if err!=nil{t.Fatal(err)};r:=got[10];if len(r.Groups)!=2{t.Fatalf("groups=%d, want 2",len(r.Groups))};if r.ActiveChatID!=-1001{t.Fatalf("active=%d, want -1001",r.ActiveChatID)};if r.Groups[1].Username!="archive"{t.Fatalf("username not persisted: %+v",r.Groups[1])}}
 func TestForgetActiveSelectsMostRecentRemainingAndDeletesEmptyRecord(t *testing.T){db,err:=Open(filepath.Join(t.TempDir(),"prefs.db"));if err!=nil{t.Fatal(err)};defer db.Close();if err:=db.Add(11,Destination{ChatID:-1,Title:"One"});err!=nil{t.Fatal(err)};if err:=db.Add(11,Destination{ChatID:-2,Title:"Two"});err!=nil{t.Fatal(err)};if err:=db.Forget(11,-2);err!=nil{t.Fatal(err)};snap,err:=db.Snapshot();if err!=nil{t.Fatal(err)};if snap[11].ActiveChatID!=-1||len(snap[11].Groups)!=1{t.Fatalf("unexpected fallback: %+v",snap[11])};if err:=db.Forget(11,-1);err!=nil{t.Fatal(err)};snap,err=db.Snapshot();if err!=nil{t.Fatal(err)};if _,ok:=snap[11];ok{t.Fatal("empty user record should be deleted")}}
 func TestSelectAndForgetRejectUnknownGroup(t *testing.T){db,err:=Open(filepath.Join(t.TempDir(),"prefs.db"));if err!=nil{t.Fatal(err)};defer db.Close();if err:=db.Select(99,-9);err==nil{t.Fatal("select unknown group should fail")};if err:=db.Forget(99,-9);err==nil{t.Fatal("forget unknown group should fail")}}
+
+func TestTutorialVideoIDSurvivesReopen(t *testing.T){
+	path:=filepath.Join(t.TempDir(),"data","prefs.db")
+	db,err:=Open(path);if err!=nil{t.Fatal(err)}
+	if err:=db.SetTutorialVideoID("telegram-file-id");err!=nil{t.Fatal(err)}
+	if err:=db.Close();err!=nil{t.Fatal(err)}
+	db,err=Open(path);if err!=nil{t.Fatal(err)};defer db.Close()
+	got,err:=db.TutorialVideoID();if err!=nil{t.Fatal(err)}
+	if got!="telegram-file-id"{t.Fatalf("tutorial file ID=%q, want telegram-file-id",got)}
+}
