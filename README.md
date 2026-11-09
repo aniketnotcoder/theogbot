@@ -14,6 +14,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 - `/setstorage`: choose an existing destination by forwarding a message from its group/channel in private chat.
 - `/storage`: open storage management. Switch the active destination, create another named group, connect an existing group, or forget a saved entry (this does not delete the Telegram group).
 - `/info`, `/help` or `/tutorial`, `/start`, `/logout`.
+- `/backup`: send the raw bbolt database file to the configured administrator. Private chat only; sender ID must match `ADMIN_ID`.
 
 ## Required Railway variables
 
@@ -25,6 +26,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 | `STORAGE_TARGET` | No | Optional shared fallback destination (private numeric ID). Prefer `/setstorage` for per-user destinations. |
 | `TEMP_DIR` | No | Writable temporary directory; defaults to the OS temp directory. |
 | `STORAGE_DB_PATH` | No | bbolt database path; defaults to `data/theogbot.db`. On Railway, mount a persistent volume at `/data` and set `/data/theogbot.db`. |
+| `ADMIN_ID` | No | Telegram numeric user ID authorized to use `/backup`. Leave unset to keep database backup disabled. |
 
 ## Telegram setup
 
@@ -62,16 +64,13 @@ go run ./cmd/theogbot
 
 ## Railway deployment and testing
 
-No new Railway environment variables were introduced for Phase 4. Keep the existing variables:
+Attach a persistent Railway volume and mount it at `/data`. Set:
 
-- `BOT_TOKEN` — required; the BotFather token used by the Bot API controller and the separate MTProto destination uploader.
-- `API_ID` — required positive integer from https://my.telegram.org/apps.
-- `API_HASH` — required from https://my.telegram.org/apps.
-- `STORAGE_TARGET` — optional. Leave it empty when each user will configure a destination with `/setstorage`; otherwise set a private numeric destination ID as a shared fallback. The exact bot from `BOT_TOKEN` must be a member/admin with posting rights.
-- `TEMP_DIR` — optional; defaults to the OS temporary directory. If set, use a writable path such as `/tmp/theogbot`. Ensure available temporary disk space can accommodate the largest in-flight item plus the 128 MiB reserve.
+- `STORAGE_DB_PATH=/data/theogbot.db`
+- `ADMIN_ID=<your Telegram numeric user ID>` to enable the private-chat `/backup` command.
 
-After deploying the new main build, verify Railway uses the Dockerfile build and start command supplied by the repository (the Docker image entrypoint is `theogbot`). In Railway → service → Variables, retain the three required credentials, configure `STORAGE_TARGET` only if using a shared fallback, and optionally set `TEMP_DIR`. Do not add a new variable for progress or transfer limits; these are code constants.
+The Docker entrypoint fixes ownership of the mounted `/data` volume for UID/GID `10001`, then drops privileges before starting the bot. The bbolt database is opened with file mode `0600`, creates its parent directory when needed, and uses a one-second lock timeout.
 
-For a safe live test, use a private test destination, add the configured bot with posting rights, send `/setstorage` and forward a message from that destination, then run `/storage`. Log in with a test source account and transfer a small text/photo/video set with `/batch` or a small history with `/copy`. Confirm byte progress, speed/ETA, destination links, final counts, and then test `/cancel` on a larger permitted file. Do not test against a production channel until the private test succeeds.
+Storage groups and each user's active destination persist in bbolt across restarts when the volume remains attached. Source Telegram login sessions remain in memory and must be reconnected after a restart. Temporary media remains on ephemeral storage and is cleaned up after transfers.
 
-**Session persistence:** source-account sessions and per-user destination selections are memory-only. A Railway restart/redeploy clears them; users must run `/login` and `/setstorage` again. No persistent database or Railway volume is currently required by the code. Temporary media is ephemeral and is deleted after each transfer.
+For a safe live test, use a private test destination, add the configured uploader bot with posting rights, send `/setstorage` and forward a message from that destination, then run `/storage`. Log in with a test source account and transfer a small text/photo/video set with `/batch` or a small history with `/copy`. Confirm progress and destination results, then test `/cancel` on a larger permitted file. Do not test against a production channel until the private test succeeds.
