@@ -1,13 +1,18 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -301,6 +306,33 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		return
 	case "/logout":
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
+	case "/backup":
+		if msg.Chat.Type != "private" {
+			reply = "For security, use /backup in a private chat with this bot."
+		} else {
+			adminID, parseErr := strconv.ParseInt(strings.TrimSpace(os.Getenv("ADMIN_ID")), 10, 64)
+			if parseErr != nil || adminID <= 0 {
+				reply = "Database backup is not configured. Set ADMIN_ID to your Telegram numeric user ID."
+			} else if msg.From.ID != adminID {
+				reply = "You are not authorized to use this command."
+			} else {
+				dbPath := strings.TrimSpace(os.Getenv("STORAGE_DB_PATH"))
+				if dbPath == "" { dbPath = "data/theogbot.db" }
+				if _, statErr := os.Stat(dbPath); statErr != nil {
+					reply = "The storage database file is not available."
+				} else {
+					backupCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+					sendErr := b.sendDocument(backupCtx, msg.Chat.ID, dbPath)
+					cancel()
+					if sendErr != nil {
+						b.log.Error("database backup send failed", "admin_id", msg.From.ID, "error", sendErr)
+						reply = "Could not send the database backup. Check the bot logs."
+					} else {
+						return
+					}
+				}
+			}
+		}
 	case "/info":
 		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(msg.From.ID)}
 		reply=fmt.Sprintf("TheOGBot\n\nAccount: %s\nDestination: %s",status,b.destinationStatus(msg.From.ID))
@@ -977,6 +1009,34 @@ func (b *Bot) onAccountEvent(userID int64,state string,err error){
 			{{"text":"Use another number","callback_data":"login:start"}},
 		}})
 	}
+}
+
+// sendDocument uploads a local file using Telegram's multipart Bot API.
+func (b *Bot) sendDocument(ctx context.Context, chatID int64, path string) error {
+	file, err := os.Open(path)
+	if err != nil { return fmt.Errorf("open backup file: %w", err) }
+	defer file.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil { return err }
+	part, err := writer.CreateFormFile("document", filepath.Base(path))
+	if err != nil { return err }
+	if _, err := io.Copy(part, file); err != nil { return fmt.Errorf("read backup file: %w", err) }
+	if err := writer.Close(); err != nil { return err }
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, telegramAPI+"/bot"+b.token+"/sendDocument", &body)
+	if err != nil { return err }
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := b.client.Do(req)
+	if err != nil { return fmt.Errorf("send Telegram document: %w", err) }
+	defer resp.Body.Close()
+	var result apiResponse[json.RawMessage]
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil { return fmt.Errorf("decode Telegram sendDocument response: %w", err) }
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.OK {
+		return fmt.Errorf("Telegram sendDocument: %s (HTTP %d)", result.Description, resp.StatusCode)
+	}
+	return nil
 }
 
 func (b *Bot) call(ctx context.Context,method string,values url.Values,out any)error{
