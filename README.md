@@ -10,9 +10,9 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 - `/batch LINK [LINK ...]`: transfer only the explicitly linked posts, in the supplied order. Links must belong to one source chat.
 - `/copy CHAT_LINK [LIMIT]`: transfer accessible chat history. A post permalink can identify the chat; the trailing post ID is ignored in history mode. Default limit is 100, maximum 50000.
 - `/cancel`: cancel your active transfer.
-- `/createstorage`: create a private storage group with your connected Telegram account, automatically add and promote the uploader bot, and connect it.
+- `/createstorage`: create another private storage group with a custom name, automatically add and promote the uploader bot, and connect it. Send `default` to use “TheOGBot Storage”.
 - `/setstorage`: choose an existing destination by forwarding a message from its group/channel in private chat.
-- `/storage`: show your saved destination and uploader access status.
+- `/storage`: open storage management. Switch the active destination, create another named group, connect an existing group, or forget a saved entry (this does not delete the Telegram group).
 - `/info`, `/help` or `/tutorial`, `/start`, `/logout`.
 
 ## Required Railway variables
@@ -27,7 +27,7 @@ Go Telegram bot: Bot API for commands, gotd/td (MTProto) for each user's source 
 
 ## Telegram setup
 
-The welcome screen, help/tutorial prompts, login keypad, storage confirmations, transfer messages, and progress cards use a fresh SFW anime image from the documented [Waifu API](https://docs.waifu.best/docs/getting-started/) (`https://api.waifu.best/images?IsNsfw=False&IncludedTags=waifu`). No API key is required for random public SFW images. If the image service or Telegram photo delivery is unavailable, the bot falls back to a normal text message so actions remain usable.
+The welcome screen and tutorial use landscape SFW anime artwork; OTP and transfer progress cards use portrait artwork. Short prompts and notices stay text-only. Images come from the documented [Waifu API](https://docs.waifu.best/docs/getting-started/). No API key is required for random public SFW images. If the image service or Telegram photo delivery is unavailable, the bot falls back to a normal text message so actions remain usable.
 
 1. Create a bot with @BotFather and set `BOT_TOKEN`.
 2. Open TheOGBot and send `/start`. Use **Connect account** and complete the private login prompts.
@@ -45,7 +45,7 @@ The welcome screen, help/tutorial prompts, login keypad, storage confirmations, 
 - The transfer pipeline downloads supported media to temporary disk and uploads it as new messages. Text-only messages are sent as text; photos are uploaded as photos; documents retain their filename, MIME type, video/audio/sticker attributes and caption text where Telegram exposes them. Consecutive photo/video posts from the same source album are uploaded as one destination media group (up to Telegram's 10-item album limit) when every selected member is available.
 - Media downloads are capped at 2 GiB per item. Unsupported/service messages are reported as skipped rather than counted as uploads. Common caption formatting entities (bold, italic, underline, strike, code, links, mentions, spoilers, and blockquotes) are preserved. Source thumbnails and some less common entity types are not yet preserved. Album grouping is preserved for consecutive selected photos/videos; unsupported or incomplete album members fall back to individual transfers.
 - Messages explicitly marked as protected are not downloaded. Telegram's API response is authoritative; the bot does not claim to override Telegram restrictions.
-- Source sessions and per-user destinations are memory-only and are lost when Railway restarts or redeploys; users must log in again and run `/createstorage` again or reconnect an existing destination with `/setstorage`.
+- Source sessions, per-user destinations, and storage-group management history are memory-only and are lost when Railway restarts or redeploys; users must log in again and reconnect a destination with `/setstorage` or create a new group.
 - Temporary files use Railway's ephemeral filesystem. Ensure adequate free space for the largest file being transferred.
 - Transfers are sequential per user. `/cancel` requests safe cancellation. A single edited progress message reports the current stage, item position, live downloaded/uploaded bytes, percentage where the total is known, measured transfer speed, byte ETA, elapsed time, and uploaded/failed/skipped totals. Download and upload use up to four chunks per file. Downloads require a 128 MiB free-space reserve and are capped at 2 GiB per item. gotd v0.163.0 handles safe MTProto connection-loss recovery by retrying requests that were sent but not acknowledged on a replacement connection. At the application layer, only explicit Telegram FloodWait responses are retried; uncertain final-send outcomes are never blindly replayed. Successful sends return destination message links where available, or chat/message identifiers for basic groups.
 

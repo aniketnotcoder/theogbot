@@ -200,3 +200,24 @@ func TestWaifuImageResponseSkipsPortraitAndNearSquare(t *testing.T) {
 	}
 	if selected != "https://cdn.example/landscape.jpg" { t.Fatalf("selected image = %q, want landscape image", selected) }
 }
+
+func TestStorageHistorySwitchAndForget(t *testing.T) {
+	b:=&Bot{destinations:map[int64]destination{},storageHistory:map[int64][]destination{}}
+	first:=destination{ChatID:-100101,Title:"Main"}
+	second:=destination{ChatID:-100202,Title:"Archive"}
+	b.addStorage(7,first);b.addStorage(7,second)
+	if active,ok:=b.getDestination(7);!ok||active.ChatID!=second.ChatID{t.Fatalf("latest storage should be active: %+v %v",active,ok)}
+	if !b.selectStorage(7,first.ChatID){t.Fatal("expected first storage to be selectable")}
+	if active,_:=b.getDestination(7);active.ChatID!=first.ChatID{t.Fatalf("active storage = %+v, want first",active)}
+	if got:=len(b.getStorageHistory(7));got!=2{t.Fatalf("history length = %d, want 2",got)}
+	if !b.forgetStorage(7,first.ChatID){t.Fatal("expected active storage to be forgettable")}
+	if active,ok:=b.getDestination(7);!ok||active.ChatID!=second.ChatID{t.Fatalf("forgetting active should select remaining storage: %+v %v",active,ok)}
+	if b.forgetStorage(7,first.ChatID){t.Fatal("forgotten storage should not be found twice")}
+}
+func TestAddStorageUpdatesExistingEntryWithoutDuplicate(t *testing.T) {
+	b:=&Bot{destinations:map[int64]destination{},storageHistory:map[int64][]destination{}}
+	b.addStorage(1,destination{ChatID:-1001,Title:"Old"})
+	b.addStorage(1,destination{ChatID:-1001,Title:"Renamed"})
+	if got:=len(b.getStorageHistory(1));got!=1{t.Fatalf("history length = %d, want 1",got)}
+	if active,_:=b.getDestination(1);active.Title!="Renamed"{t.Fatalf("active title = %q",active.Title)}
+}

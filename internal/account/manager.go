@@ -143,7 +143,7 @@ type StorageGroup struct {
 
 // CreateStorageGroup creates a private supergroup from the connected source
 // account, invites the configured uploader bot, and grants it limited admin rights.
-func (m *Manager) CreateStorageGroup(ctx context.Context, userID int64, botUsername string) (StorageGroup, error) {
+func (m *Manager) CreateStorageGroup(ctx context.Context, userID int64, botUsername, requestedTitle string) (StorageGroup, error) {
 	m.mu.Lock()
 	a := m.users[userID]
 	if a == nil || a.state != "connected" || a.client == nil {
@@ -166,7 +166,9 @@ func (m *Manager) CreateStorageGroup(ctx context.Context, userID int64, botUsern
 	}
 	if botUser == nil || botUser.AccessHash == 0 { return StorageGroup{}, errors.New("could not resolve the uploader bot account") }
 
-	title := "TheOGBot Storage"
+	title := strings.TrimSpace(requestedTitle)
+	if title == "" { title = "TheOGBot Storage" }
+	if len([]rune(title)) > 64 { return StorageGroup{}, errors.New("storage group name must be 64 characters or fewer") }
 	created, err := api.ChannelsCreateChannel(ctx, &tg.ChannelsCreateChannelRequest{
 		Megagroup: true, Title: title, About: "Private storage group for TheOGBot transfers.",
 	})

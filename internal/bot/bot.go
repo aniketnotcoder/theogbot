@@ -37,6 +37,7 @@ type Bot struct {
 	jobs map[int64]context.CancelFunc
 	destMu sync.RWMutex
 	destinations map[int64]destination
+	storageHistory map[int64][]destination
 	awaitingDestination map[int64]bool
 	storageSetup map[int64]bool
 	pendingInput map[int64]string
@@ -75,22 +76,22 @@ type otpInput struct { ChatID int64; MessageID int64; Code string; Photo bool }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"`; Photo []json.RawMessage `json:"photo"` }
 
-type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; mu sync.Mutex; last time.Time; displayStage string; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
+type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; Photo bool; mu sync.Mutex; last time.Time; displayStage string; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
 
 func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total int) (*progressReporter, error) {
 	var sent sentMessage
 	markup := map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "Cancel transfer", "callback_data": "job:cancel"}}}}
 	caption := formatProgress(label, "Preparing", 0, total, 0, 0, 0, 0, 0, 0, 0)
-	values := url.Values{
-		"chat_id": {strconv.FormatInt(chatID, 10)},
-		"text": {caption},
-		"reply_markup": {mustJSON(markup)},
+	isPhoto := false
+	if photo := b.progressImage(ctx); photo != "" {
+		values := url.Values{"chat_id": {strconv.FormatInt(chatID,10)}, "photo": {photo}, "caption": {caption}, "reply_markup": {mustJSON(markup)}}
+		if err := b.call(ctx,"sendPhoto",values,&sent); err == nil { isPhoto = true }
 	}
-	if err := b.call(ctx, "sendMessage", values, &sent); err != nil {
-		return nil, err
+	if !isPhoto {
+		values := url.Values{"chat_id": {strconv.FormatInt(chatID,10)}, "text": {caption}, "reply_markup": {mustJSON(markup)}}
+		if err := b.call(ctx,"sendMessage",values,&sent); err != nil { return nil, err }
 	}
-	return &progressReporter{bot: b, chatID: chatID, messageID: sent.MessageID, label: label, total: total, started: time.Now()}, nil
-	return &progressReporter{bot: b, chatID: chatID, messageID: sent.MessageID, label: label, total: total, started: time.Now()}, nil
+	return &progressReporter{bot:b,chatID:chatID,messageID:sent.MessageID,label:label,total:total,started:time.Now(),Photo:isPhoto},nil
 }
 
 func mustJSON(value any) string { raw,_:=json.Marshal(value);return string(raw) }
@@ -195,8 +196,10 @@ func (p *progressReporter) update(ctx context.Context, stage string, current, do
 	if done+failed+skipped>=p.total || strings.Contains(strings.ToLower(stage),"cancel") || strings.Contains(strings.ToLower(stage),"finish") {
 		markup=map[string]any{"inline_keyboard":[][]map[string]string{{{"text":"Back to menu","callback_data":"menu:home"},{"text":"New batch","callback_data":"transfer:batch"}}}}
 	}
-	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},"text":{text},"reply_markup":{mustJSON(markup)}}
-	if err:=p.bot.call(ctx,"editMessageText",values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
+	textField, method := "text", "editMessageText"
+	if p.Photo { textField, method = "caption", "editMessageCaption" }
+	values:=url.Values{"chat_id":{strconv.FormatInt(p.chatID,10)},"message_id":{strconv.FormatInt(p.messageID,10)},textField:{text},"reply_markup":{mustJSON(markup)}}
+	if err:=p.bot.call(ctx,method,values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
 }
 type apiResponse[T any] struct {
 	OK bool `json:"ok"`
@@ -208,7 +211,7 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 	app:=&Bot{token: token, client: &http.Client{
 		Timeout: 45*time.Second,
 		Transport: &http.Transport{Proxy:http.ProxyFromEnvironment,MaxIdleConns:100,MaxIdleConnsPerHost:20,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:10*time.Second,ResponseHeaderTimeout:40*time.Second,DialContext:(&net.Dialer{Timeout:10*time.Second,KeepAlive:30*time.Second}).DialContext},
-	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),awaitingDestination:make(map[int64]bool),storageSetup:make(map[int64]bool),pendingInput:make(map[int64]string),otpInputs:make(map[int64]*otpInput)}
+	},log:logger,accounts:accounts,jobs:make(map[int64]context.CancelFunc),destinations:make(map[int64]destination),storageHistory:make(map[int64][]destination),awaitingDestination:make(map[int64]bool),storageSetup:make(map[int64]bool),pendingInput:make(map[int64]string),otpInputs:make(map[int64]*otpInput)}
 	if accounts!=nil { accounts.SetNotifier(app.onAccountEvent) }
 	return app
 }
@@ -268,8 +271,8 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		if b.cancelJob(msg.From.ID){reply="Cancellation requested. The current operation will stop safely."}else{reply="No active transfer to cancel."}
 	case "/createstorage":
 		if msg.Chat.Type != "private" { reply = "Create storage in a private chat with this bot." } else {
-			_ = b.sendMessage(ctx,msg.Chat.ID,"Creating your private storage group and connecting the uploader bot…")
-			go b.createStorageGroup(ctx,msg.From.ID,msg.Chat.ID)
+			b.setPendingInput(msg.From.ID,"storage_name")
+			b.sendForceReply(ctx,msg.Chat.ID,"Name your new storage group (send default for “TheOGBot Storage”).","Storage group name")
 			return
 		}
 	case "/setstorage":
@@ -280,7 +283,8 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 			reply = "Forward any message from your existing destination group/channel to this bot. The uploader bot must already be a member with posting permission."
 		}
 	case "/storage":
-		if b.storage == nil { reply = "Storage uploader is not configured." } else if err := b.storage.Ready(ctx); err != nil { reply = "Storage uploader is not ready: " + err.Error() } else if d, ok := b.getDestination(msg.From.ID); ok { reply = fmt.Sprintf("Uploader: connected\nYour destination: %s\nChat ID: %d\nAccess: visible to uploader bot; posting rights are checked on transfer", d.Title, d.ChatID) } else { reply = "Uploader: connected\nNo personal destination configured. Send /setstorage, then forward a message from your destination group/channel." }
+		b.sendStorageManager(ctx,msg.From.ID,msg.Chat.ID)
+		return
 	case "/logout":
 		if b.accounts!=nil&&b.accounts.Logout(msg.From.ID){reply="Your in-memory Telegram session has been disconnected."}else{reply="No active Telegram session."}
 	case "/info":
@@ -520,17 +524,49 @@ func (b *Bot) getDestination(userID int64) (destination, bool) {
 	return d, ok
 }
 
+func (b *Bot) addStorage(userID int64, d destination) {
+	b.destMu.Lock()
+	defer b.destMu.Unlock()
+	items := b.storageHistory[userID]
+	for i := range items {
+		if items[i].ChatID == d.ChatID {
+			items[i] = d
+			b.storageHistory[userID] = items
+			b.destinations[userID] = d
+			return
+		}
+	}
+	b.storageHistory[userID] = append(items,d)
+	b.destinations[userID] = d
+}
+func (b *Bot) getStorageHistory(userID int64) []destination {
+	b.destMu.RLock(); defer b.destMu.RUnlock()
+	return append([]destination(nil),b.storageHistory[userID]...)
+}
+func (b *Bot) selectStorage(userID,chatID int64) bool {
+	b.destMu.Lock(); defer b.destMu.Unlock()
+	for _,d:=range b.storageHistory[userID] { if d.ChatID==chatID { b.destinations[userID]=d; return true } }
+	return false
+}
+func (b *Bot) forgetStorage(userID,chatID int64) bool {
+	b.destMu.Lock(); defer b.destMu.Unlock()
+	items:=b.storageHistory[userID]
+	kept:=make([]destination,0,len(items));found:=false
+	for _,d:=range items { if d.ChatID==chatID {found=true;continue};kept=append(kept,d) }
+	if !found{return false}
+	b.storageHistory[userID]=kept
+	if active,ok:=b.destinations[userID];ok&&active.ChatID==chatID {
+		if len(kept)==0 {delete(b.destinations,userID)} else {b.destinations[userID]=kept[len(kept)-1]}
+	}
+	return true
+}
 
-func (b *Bot) createStorageGroup(ctx context.Context, userID, chatID int64) {
+
+func (b *Bot) createStorageGroup(ctx context.Context, userID, chatID int64, title string) {
 	b.destMu.Lock()
 	if b.storageSetup[userID] {
 		b.destMu.Unlock()
 		_ = b.sendMessage(ctx, chatID, "Storage setup is already running. Please wait for it to finish.")
-		return
-	}
-	if _, exists := b.destinations[userID]; exists {
-		b.destMu.Unlock()
-		_ = b.sendMessage(ctx, chatID, "You already have a storage group connected. Use Existing group if you want to change it.")
 		return
 	}
 	b.storageSetup[userID] = true
@@ -547,7 +583,7 @@ func (b *Bot) createStorageGroup(ctx context.Context, userID, chatID int64) {
 	if b.storage == nil { _ = b.sendMessage(ctx, chatID, "Storage uploader is not configured."); return }
 	setupCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	group, err := b.accounts.CreateStorageGroup(setupCtx, userID, b.username)
+	group, err := b.accounts.CreateStorageGroup(setupCtx, userID, b.username, title)
 	if err != nil { _ = b.sendMessage(ctx, chatID, "Could not finish storage setup: "+err.Error()); return }
 	peer, err := b.storage.ResolvePeer(setupCtx, strconv.FormatInt(group.ChatID, 10))
 	if err != nil {
@@ -558,9 +594,9 @@ func (b *Bot) createStorageGroup(ctx context.Context, userID, chatID int64) {
 		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Your group was created and the uploader bot was promoted, but the final connection check failed: %v. Try Create storage again after a moment.", err))
 		return
 	}
+	b.addStorage(userID,destination{ChatID:group.ChatID,Title:group.Title})
 	b.destMu.Lock()
-	b.destinations[userID] = destination{ChatID: group.ChatID, Title: group.Title}
-	delete(b.awaitingDestination, userID)
+	delete(b.awaitingDestination,userID)
 	b.destMu.Unlock()
 	_ = b.sendMessageMarkup(ctx, chatID,
 		fmt.Sprintf("✦ STORAGE IS READY\n\n%s\n\nThe uploader bot is connected and can post files.\n\nImportant: tap Join storage group using the Telegram account you want to view the files with. It can be different from the account you connected for reading source chats.", group.Title),
@@ -593,9 +629,7 @@ func (b *Bot) captureForwardedDestination(ctx context.Context, msg *incomingMess
 	title := strings.TrimSpace(forwardedChat.Title)
 	if title=="" { title=forwardedChat.Username }
 	if title=="" { title=strconv.FormatInt(forwardedChat.ID,10) }
-	b.destMu.Lock()
-	b.destinations[msg.From.ID]=destination{ChatID:forwardedChat.ID,Title:title,Username:forwardedChat.Username}
-	b.destMu.Unlock()
+	b.addStorage(msg.From.ID,destination{ChatID:forwardedChat.ID,Title:title,Username:forwardedChat.Username})
 	_ = b.sendMessage(ctx,msg.Chat.ID,fmt.Sprintf("Destination saved for your account.\nName: %s\nChat ID: %d\nUploader bot can see this chat. Posting permission will be checked on transfer.",title,forwardedChat.ID))
 	return true
 }
@@ -726,24 +760,25 @@ type waifuImageResponse struct {
 	} `json:"items"`
 }
 
-func (b *Bot) welcomeImage(ctx context.Context) string {
-	imageCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(imageCtx, http.MethodGet, "https://api.waifu.best/images?IsNsfw=False&IncludedTags=waifu&Orientation=LANDSCAPE&PageSize=20", nil)
-	if err != nil { return "" }
-	resp, err := b.client.Do(req)
-	if err != nil { return "" }
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return "" }
+func (b *Bot) waifuImage(ctx context.Context, orientation string) string {
+	imageCtx,cancel:=context.WithTimeout(ctx,5*time.Second);defer cancel()
+	requestURL:="https://api.waifu.best/images?IsNsfw=False&IncludedTags=waifu&Orientation="+url.QueryEscape(orientation)+"&PageSize=20"
+	req,err:=http.NewRequestWithContext(imageCtx,http.MethodGet,requestURL,nil);if err!=nil{return ""}
+	resp,err:=b.client.Do(req);if err!=nil{return ""};defer resp.Body.Close()
+	if resp.StatusCode<200||resp.StatusCode>=300{return ""}
 	var result waifuImageResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || len(result.Items) == 0 { return "" }
-	// Do not let portrait or near-square artwork turn short dialogs into tall cards.
-	for _, item := range result.Items {
-		if item.Width <= 0 || item.Height <= 0 || float64(item.Width)/float64(item.Height) < 1.25 { continue }
-		if itemURL := strings.TrimSpace(item.URL); itemURL != "" { return itemURL }
+	if err:=json.NewDecoder(resp.Body).Decode(&result);err!=nil||len(result.Items)==0{return ""}
+	for _,item:=range result.Items {
+		if item.Width<=0||item.Height<=0{continue}
+		ratio:=float64(item.Width)/float64(item.Height)
+		if orientation=="LANDSCAPE"&&ratio<1.25{continue}
+		if orientation=="PORTRAIT"&&ratio>0.8{continue}
+		if itemURL:=strings.TrimSpace(item.URL);itemURL!=""{return itemURL}
 	}
 	return ""
 }
+func (b *Bot) welcomeImage(ctx context.Context) string { return b.waifuImage(ctx,"LANDSCAPE") }
+func (b *Bot) progressImage(ctx context.Context) string { return b.waifuImage(ctx,"PORTRAIT") }
 
 func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 	title := "✦ THEOGBOT"
@@ -785,6 +820,43 @@ func (b *Bot) sendMenu(ctx context.Context,chatID int64,text string) {
 func (b *Bot) setPendingInput(userID int64,kind string){b.destMu.Lock();b.pendingInput[userID]=kind;b.destMu.Unlock()}
 func (b *Bot) takePendingInput(userID int64)string{b.destMu.Lock();defer b.destMu.Unlock();kind:=b.pendingInput[userID];delete(b.pendingInput,userID);return kind}
 func (b *Bot) destinationStatus(userID int64)string{if d,ok:=b.getDestination(userID);ok{return d.Title};return "not configured"}
+
+func (b *Bot) sendStorageManager(ctx context.Context,userID,chatID int64) {
+	items:=b.getStorageHistory(userID)
+	active,hasActive:=b.getDestination(userID)
+	var body strings.Builder
+	body.WriteString("✦ YOUR STORAGE\n\n")
+	if len(items)==0 { body.WriteString("No storage groups saved yet. Create one or connect an existing group.") } else {
+		body.WriteString(fmt.Sprintf("%d saved group(s)",len(items)))
+		for i,d:=range items {
+			marker:="  ";if hasActive&&d.ChatID==active.ChatID{marker="✓ "}
+			body.WriteString(fmt.Sprintf("\n\n%s%d. %s",marker,i+1,d.Title))
+		}
+		body.WriteString("\n\nChoose a group to make it your active upload destination.")
+	}
+	rows:=make([][]map[string]string,0,len(items)+2)
+	for _,d:=range items {
+		label:=d.Title;if len([]rune(label))>25{label=string([]rune(label)[:24])+"…"}
+		text:="Use · "+label;if hasActive&&d.ChatID==active.ChatID{text="✓ Active · "+label}
+		rows=append(rows,[]map[string]string{{"text":text,"callback_data":"storage:use:"+strconv.FormatInt(d.ChatID,10)},{"text":"Forget","callback_data":"storage:forget:"+strconv.FormatInt(d.ChatID,10)}})
+	}
+	rows=append(rows,[]map[string]string{{"text":"＋ Create another","callback_data":"storage:create"},{"text":"Add existing","callback_data":"storage:set"}})
+	rows=append(rows,[]map[string]string{{"text":"Back to account","callback_data":"account:status"}})
+	_ = b.sendMessageMarkup(ctx,chatID,body.String(),map[string]any{"inline_keyboard":rows})
+}
+
+func (b *Bot) sendAccountCard(ctx context.Context,userID,chatID int64) {
+	status:="Disconnected";if b.accounts!=nil{status=b.accounts.Status(userID)}
+	active,hasActive:=b.getDestination(userID)
+	storageName:="Not configured";if hasActive{storageName=active.Title}
+	history:=b.getStorageHistory(userID)
+	transfer:="Idle";b.jobsMu.Lock();if _,ok:=b.jobs[userID];ok{transfer="Running"};b.jobsMu.Unlock()
+	body:=fmt.Sprintf("✦ MY ACCOUNT\n\nTelegram account: %s\nActive storage: %s\nSaved storage groups: %d\nTransfer: %s",status,storageName,len(history),transfer)
+	rows:=[][]map[string]string{{{"text":"Manage storage","callback_data":"storage:list"},{"text":"Change destination","callback_data":"storage:set"}}}
+	if b.accounts!=nil&&b.accounts.Connected(userID){rows=append(rows,[]map[string]string{{"text":"Disconnect account","callback_data":"account:logout"}})}else{rows=append(rows,[]map[string]string{{"text":"Connect account","callback_data":"login:start"}})}
+	rows=append(rows,[]map[string]string{{"text":"Back to menu","callback_data":"menu:home"}})
+	_ = b.sendMessageMarkup(ctx,chatID,body,map[string]any{"inline_keyboard":rows})
+}
 func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value string)bool{
 	kind:=b.takePendingInput(msg.From.ID)
 	if kind!="" {
@@ -800,6 +872,12 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 			fields:=strings.Fields(value);if len(fields)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send a Telegram chat link, optionally followed by a limit.");return true}
 			limit:=100;if len(fields)>1{n,err:=strconv.Atoi(fields[1]);if err!=nil||n<1||n>50000{_ = b.sendMessage(ctx,msg.Chat.ID,"Limit must be between 1 and 50000.");return true};limit=n}
 			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],limit)}()}
+		case "storage_name":
+			title:=strings.TrimSpace(value)
+			if strings.EqualFold(title,"default"){title=""}
+			if len([]rune(title))>64{_ = b.sendMessage(ctx,msg.Chat.ID,"Keep the group name within 64 characters and try again.");return true}
+			_ = b.sendMessage(ctx,msg.Chat.ID,"Creating your storage group…")
+			go b.createStorageGroup(ctx,msg.From.ID,msg.Chat.ID,title)
 		}
 		return true
 	}
@@ -825,6 +903,16 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	if chatID!=userID { return }
 	if q.Message.Chat.Type!="private" { _ = b.sendMessage(ctx,chatID,"Open the bot's private chat and send /start to use these controls securely."); return }
 	if b.handleOTPCallback(ctx,q,chatID,userID) { return }
+	if strings.HasPrefix(q.Data,"storage:use:") {
+		id,err:=strconv.ParseInt(strings.TrimPrefix(q.Data,"storage:use:"),10,64)
+		if err==nil&&b.selectStorage(userID,id){b.sendStorageManager(ctx,userID,chatID)}else{_ = b.sendMessage(ctx,chatID,"That storage is no longer in your saved list.")}
+		return
+	}
+	if strings.HasPrefix(q.Data,"storage:forget:") {
+		id,err:=strconv.ParseInt(strings.TrimPrefix(q.Data,"storage:forget:"),10,64)
+		if err==nil&&b.forgetStorage(userID,id){b.sendStorageManager(ctx,userID,chatID)}else{_ = b.sendMessage(ctx,chatID,"That storage is no longer in your saved list.")}
+		return
+	}
 	switch q.Data {
 	case "login:start":
 		b.setPendingInput(userID,"phone")
@@ -836,8 +924,10 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	case "login:retry":
 		if b.accounts==nil { _ = b.sendMessage(ctx,chatID,"MTProto login is unavailable.") } else if err:=b.accounts.Retry(ctx,userID);err!=nil { _ = b.sendMessage(ctx,chatID,"Could not restart login: "+err.Error()) } else { _ = b.sendMessage(ctx,chatID,"A fresh login attempt has started. Wait for the new Telegram code prompt.") }
 	case "storage:create":
-		_ = b.sendMessage(ctx,chatID,"Creating your private storage group and connecting the uploader bot…")
-		go b.createStorageGroup(ctx,userID,chatID)
+		b.setPendingInput(userID,"storage_name")
+		b.sendForceReply(ctx,chatID,"Name your new storage group (send default for “TheOGBot Storage”).","Storage group name")
+	case "storage:list":
+		b.sendStorageManager(ctx,userID,chatID)
 	case "storage:set":
 		b.destMu.Lock();b.awaitingDestination[userID]=true;b.destMu.Unlock()
 		_ = b.sendMessage(ctx,chatID,"Forward any message from your existing destination group or channel here. The configured uploader bot must already have posting permission.")
@@ -850,10 +940,10 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	case "job:cancel":
 		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
 	case "account:logout":
-		if b.accounts!=nil&&b.accounts.Logout(userID){_ = b.sendMessage(ctx,chatID,"Your Telegram account has been disconnected.")}else{_ = b.sendMessage(ctx,chatID,"No active account session.")}
+		if b.accounts!=nil { b.accounts.Logout(userID) }
+		b.sendAccountCard(ctx,userID,chatID)
 	case "account:status":
-		status:="disconnected";if b.accounts!=nil{status=b.accounts.Status(userID)}
-		_ = b.sendMessage(ctx,chatID,fmt.Sprintf("Account: %s\nDestination: %s",status,b.destinationStatus(userID)))
+		b.sendAccountCard(ctx,userID,chatID)
 	case "help":
 		b.sendWelcome(ctx,chatID,true) 
 	case "menu:home":
