@@ -71,9 +71,9 @@ type incomingMessage struct {
 	ForwardOrigin *forwardOrigin `json:"forward_origin"`
 }
 type destination struct { ChatID int64; Title string; Username string }
-type otpInput struct { ChatID int64; MessageID int64; Code string }
+type otpInput struct { ChatID int64; MessageID int64; Code string; Photo bool }
 type botIdentity struct { Username string `json:"username"` }
-type sentMessage struct { MessageID int64 `json:"message_id"` }
+type sentMessage struct { MessageID int64 `json:"message_id"`; Photo []json.RawMessage `json:"photo"` }
 
 type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; mu sync.Mutex; last time.Time; displayStage string; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
 
@@ -655,10 +655,18 @@ func (b *Bot) sendOTPKeypad(ctx context.Context,chatID,userID int64) {
 	var sent sentMessage
 	err:=b.sendPhotoMarkup(ctx,chatID,otpPrompt(""),otpKeyboard(),&sent)
 	if err!=nil { b.log.Warn("OTP keypad send failed","chat_id",chatID,"error",err);return }
-	b.otpMu.Lock();b.otpInputs[userID]=&otpInput{ChatID:chatID,MessageID:sent.MessageID};b.otpMu.Unlock()
+	b.otpMu.Lock();b.otpInputs[userID]=&otpInput{ChatID:chatID,MessageID:sent.MessageID,Photo:len(sent.Photo)>0};b.otpMu.Unlock()
 }
 func (b *Bot) editOTPKeypad(ctx context.Context,input *otpInput) error {
-	return b.call(ctx,"editMessageCaption",url.Values{"chat_id":{strconv.FormatInt(input.ChatID,10)},"message_id":{strconv.FormatInt(input.MessageID,10)},"caption":{otpPrompt(input.Code)},"reply_markup":{mustJSON(otpKeyboard())}},nil)
+	method, textField := "editMessageText", "text"
+	if input.Photo { method, textField = "editMessageCaption", "caption" }
+	values := url.Values{
+		"chat_id": {strconv.FormatInt(input.ChatID, 10)},
+		"message_id": {strconv.FormatInt(input.MessageID, 10)},
+		textField: {otpPrompt(input.Code)},
+		"reply_markup": {mustJSON(otpKeyboard())},
+	}
+	return b.call(ctx, method, values, nil)
 }
 func (b *Bot) handleOTPCallback(ctx context.Context,q *callbackQuery,chatID,userID int64) bool {
 	if !strings.HasPrefix(q.Data,"otp:"){return false}
@@ -675,9 +683,12 @@ func (b *Bot) handleOTPCallback(ctx context.Context,q *callbackQuery,chatID,user
 	case q.Data=="otp:clear":
 		input.Code=""
 	case q.Data=="otp:cancel":
+		photo := input.Photo
 		delete(b.otpInputs,userID);b.otpMu.Unlock()
 		if b.accounts!=nil { b.accounts.Logout(userID) }
-		_ = b.call(ctx,"editMessageCaption",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},"caption":{"Login cancelled."}},nil)
+		method, field := "editMessageText", "text"
+		if photo { method, field = "editMessageCaption", "caption" }
+		_ = b.call(ctx,method,url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},field:{"Login cancelled."}},nil)
 		return true
 	case q.Data=="otp:submit":
 		code:=input.Code
@@ -688,7 +699,9 @@ func (b *Bot) handleOTPCallback(ctx context.Context,q *callbackQuery,chatID,user
 			_ = b.sendMessage(ctx,chatID,"Could not submit the code. Please try again.")
 			return true
 		}
-		_ = b.call(ctx,"editMessageCaption",url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},"caption":{"Code submitted. Checking…"}},nil)
+		method, field := "editMessageText", "text"
+		if input.Photo { method, field = "editMessageCaption", "caption" }
+		_ = b.call(ctx,method,url.Values{"chat_id":{strconv.FormatInt(chatID,10)},"message_id":{strconv.FormatInt(q.Message.MessageID,10)},field:{"Code submitted. Checking…"}},nil)
 		return true
 	default:
 		b.otpMu.Unlock();return true
