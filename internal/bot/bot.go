@@ -81,12 +81,15 @@ func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total
 	var sent sentMessage
 	markup := map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "Cancel transfer", "callback_data": "job:cancel"}}}}
 	caption := formatProgress(label, "Preparing", 0, total, 0, 0, 0, 0, 0, 0, 0)
-	if err := b.sendMessageMarkup(ctx, chatID, caption, markup); err != nil {
+	values := url.Values{
+		"chat_id": {strconv.FormatInt(chatID, 10)},
+		"text": {caption},
+		"reply_markup": {mustJSON(markup)},
+	}
+	if err := b.call(ctx, "sendMessage", values, &sent); err != nil {
 		return nil, err
 	}
-	// Progress updates are text-only; keep one compact message instead of another image card.
-	sent.MessageID = 0
-	return &progressReporter{bot: b, chatID: chatID, label: label, total: total, started: time.Now()}, nil
+	return &progressReporter{bot: b, chatID: chatID, messageID: sent.MessageID, label: label, total: total, started: time.Now()}, nil
 	return &progressReporter{bot: b, chatID: chatID, messageID: sent.MessageID, label: label, total: total, started: time.Now()}, nil
 }
 
