@@ -315,17 +315,49 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 			reply = "For privacy, use /wistia in a private chat with this bot."
 		} else if b.wistia == nil {
 			reply = "Wistia upload is not configured. Set WISTIA_API_TOKEN and WISTIA_PROJECT_ID in Railway, then redeploy."
-		} else if len(fields) < 2 || len(fields) > 3 {
-			reply = "Usage: /wistia https://t.me/channel/123 [parallel|stream] (parallel is the default)"
-		} else {
-			mode := "parallel"
-			if len(fields) == 3 { mode = strings.ToLower(fields[2]) }
-			if mode != "stream" && mode != "parallel" {
-				reply = "Mode must be parallel (default, temporary disk and parallel Telegram download) or stream (zero disk)."
-			} else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok {
+		} else if !b.wistia.HasDataAPI() {
+			reply = "Direct .bin/.mp4 delivery URLs require WISTIA_DATA_API_TOKEN with Read all folder and media data permission."
+		} else if len(fields) < 2 {
+			reply = "Usage: /wistia <post-link> [post-link ...], /wistia batch <chat-link> <start> to <end>, or /wistia copy <chat-link> [limit]."
+		} else if strings.EqualFold(fields[1], "copy") {
+			if len(fields) < 3 || len(fields) > 4 {
+				reply = "Usage: /wistia copy <chat-link> [limit] (default 100, maximum 50000)."
+			} else {
+				limit := 100
+				if len(fields) == 4 {
+					n, parseErr := strconv.Atoi(fields[3])
+					if parseErr != nil || n < 1 || n > 50000 { reply = "LIMIT must be between 1 and 50000." } else { limit = n }
+				}
+				if reply == "" {
+					if jobCtx, ok := b.startJob(msg.From.ID, ctx); !ok { reply = "A transfer is already running. Send /cancel first." } else {
+						go func() { defer b.finishJob(msg.From.ID); b.runWistiaCopy(jobCtx, msg.From.ID, msg.Chat.ID, fields[2], limit) }()
+						return
+					}
+				}
+			}
+		} else if strings.EqualFold(fields[1], "batch") {
+			batchFields := append([]string{"/batch"}, fields[2:]...)
+			rawLinks, parseErr := parseBatchCommand(batchFields)
+			if parseErr != nil { reply = "Usage: /wistia batch <chat-link> <start> to <end>. " + parseErr.Error() } else if jobCtx, ok := b.startJob(msg.From.ID, ctx); !ok {
 				reply = "A transfer is already running. Send /cancel first."
 			} else {
-				go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[1],mode)}()
+				go func() { defer b.finishJob(msg.From.ID); b.runWistiaLinks(jobCtx, msg.From.ID, msg.Chat.ID, rawLinks) }()
+				return
+			}
+		} else {
+			rawLinks := append([]string(nil), fields[1:]...)
+			mode := "parallel"
+			if len(rawLinks) == 2 && (strings.EqualFold(rawLinks[1], "parallel") || strings.EqualFold(rawLinks[1], "stream")) {
+				mode = strings.ToLower(rawLinks[1])
+				rawLinks = rawLinks[:1]
+			}
+			if jobCtx, ok := b.startJob(msg.From.ID, ctx); !ok {
+				reply = "A transfer is already running. Send /cancel first."
+			} else if len(rawLinks) == 1 {
+				go func() { defer b.finishJob(msg.From.ID); b.runWistia(jobCtx, msg.From.ID, msg.Chat.ID, rawLinks[0], mode) }()
+				return
+			} else {
+				go func() { defer b.finishJob(msg.From.ID); b.runWistiaLinks(jobCtx, msg.From.ID, msg.Chat.ID, rawLinks) }()
 				return
 			}
 		}
