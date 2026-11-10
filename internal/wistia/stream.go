@@ -39,5 +39,5 @@ func (c *Client) UploadTelegramMessage(ctx context.Context, api *tg.Client, elem
 		if err != nil { return pw.n, fmt.Errorf("download Telegram video stream: %w", err) }
 		return pw.n, nil
 	}
-	return c.UploadSource(ctx, filename, displayName, doc.Size, source, nil)
+	return c.UploadSource(ctx, filename, displayName, doc.Size, source)
 }
