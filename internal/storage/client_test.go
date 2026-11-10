@@ -120,3 +120,15 @@ func TestRetryFloodWaitDoesNotReplayUncertainUploadErrors(t *testing.T) {
 		t.Fatalf("operation called %d times, want exactly once for uncertain outcome", calls)
 	}
 }
+
+func TestUploadWorkerCountReadsBoundedRailwaySetting(t *testing.T) {
+	t.Setenv("THEOGBOT_UPLOAD_THREADS","16")
+	if got:=uploadWorkerCount();got!=16 { t.Fatalf("uploadWorkerCount()=%d, want 16",got) }
+	t.Setenv("THEOGBOT_UPLOAD_THREADS","33")
+	if got:=uploadWorkerCount();got!=uploadThreads { t.Fatalf("invalid upload worker count=%d, want default %d",got,uploadThreads) }
+}
+func TestFindForumTopicIDMatchesNormalizedTitle(t *testing.T) {
+	topics:=[]ForumTopicInfo{{ID:10,Title:"  1. Frontend  "},{ID:20,Title:"2. Backend"}}
+	if got:=findForumTopicID(topics,"1. Frontend");got!=10 { t.Fatalf("topic ID=%d, want 10",got) }
+	if got:=findForumTopicID(topics,"Missing");got!=0 { t.Fatalf("missing topic ID=%d, want 0",got) }
+}

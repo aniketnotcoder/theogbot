@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -384,13 +385,39 @@ func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limi
 	var source tg.InputPeerClass
 	if username!=""{source,err=forward.ResolveUsername(ctx,api,username)}else{source,err=forward.ResolvePrivateChannelID(ctx,api,channelID)}
 	if err!=nil{_=b.sendMessage(ctx,chatID,"Cannot access source chat: "+err.Error());return}
-	_=b.sendMessage(ctx,chatID,fmt.Sprintf("Reading accessible history (limit %d)…",limit))
+	_=b.sendMessage(ctx,chatID,fmt.Sprintf("Reading accessible history and forum topics (limit %d)…",limit))
+	topics,forumErr:=forward.FetchForumTopics(ctx,api,source,limit)
+	if forumErr==nil { b.runForumCopy(ctx,userID,api,source,chatID,topics); return }
+	if !errors.Is(forumErr,forward.ErrNotForum) { _=b.sendMessage(ctx,chatID,"Forum inspection failed: "+forumErr.Error()); return }
 	ids,err:=forward.FetchHistoryIDs(ctx,api,source,limit);if err!=nil{_=b.sendMessage(ctx,chatID,"History retrieval failed: "+err.Error());return}
 	if len(ids)==0{_=b.sendMessage(ctx,chatID,"No messages found in accessible history.");return}
 	b.executeTransfer(ctx,userID,api,source,chatID,ids,"Copy")
 }
+func (b *Bot) runForumCopy(ctx context.Context,userID int64,api *tg.Client,source tg.InputPeerClass,chatID int64,topics []forward.ForumTopic) {
+	if len(topics)==0 { _=b.sendMessage(ctx,chatID,"This forum has no accessible topics."); return }
+	if b.storage==nil { _=b.sendMessage(ctx,chatID,"Storage uploader is not configured."); return }
+	if err:=b.storage.Ready(ctx);err!=nil { _=b.sendMessage(ctx,chatID,"Storage uploader is not ready: "+err.Error()); return }
+	d,ok:=b.getDestination(userID);if !ok { _=b.sendMessage(ctx,chatID,"Set your destination first: send /setstorage, then forward a message from your destination group/channel."); return }
+	destPeer,err:=b.storage.ResolvePeer(ctx,strconv.FormatInt(d.ChatID,10));if err!=nil { _=b.sendMessage(ctx,chatID,"Your destination is not accessible to the uploader bot: "+err.Error()); return }
+	destForum,err:=b.storage.IsForum(ctx,destPeer);if err!=nil { _=b.sendMessage(ctx,chatID,"Could not inspect destination type: "+err.Error()); return }
+	total:=0;for _,topic:=range topics{total+=len(topic.IDs)}
+	_=b.sendMessage(ctx,chatID,fmt.Sprintf("Forum detected: %d topics, %d messages. Preserving topic and message order.",len(topics),total))
+	for _,topic:=range topics {
+		if err:=ctx.Err();err!=nil { b.log.Warn("forum copy stopped","user_id",userID,"topic_id",topic.ID,"cause",err);_=b.sendMessage(context.Background(),chatID,"Forum copy stopped: "+err.Error());return }
+		title:=strings.TrimSpace(topic.Title);if title==""{title=fmt.Sprintf("Topic %d",topic.ID)}
+		if destForum {
+			destTopicID,e:=b.storage.GetOrCreateForumTopic(ctx,destPeer,title);if e!=nil{_=b.sendMessage(ctx,chatID,fmt.Sprintf("Could not prepare destination topic %q: %v. This topic was not copied.",title,e));continue}
+			if len(topic.IDs)>0{b.executeTransferWithTopic(ctx,userID,api,source,chatID,topic.IDs,"Copy · "+title,destTopicID)}
+		} else {
+			if _,e:=b.storage.SendTextTo(ctx,destPeer,"📁 "+title);e!=nil{_=b.sendMessage(ctx,chatID,fmt.Sprintf("Could not create section heading for %q: %v. This topic was not copied.",title,e));continue}
+			if len(topic.IDs)>0{b.executeTransfer(ctx,userID,api,source,chatID,topic.IDs,"Copy · "+title)}
+		}
+	}
+	_=b.sendMessage(ctx,chatID,"Forum copy finished. Topics were processed in their configured order.")
+}
 
-func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client, source tg.InputPeerClass, chatID int64, ids []int, label string) {
+func (b *Bot) executeTransfer(ctx context.Context,userID int64,api *tg.Client,source tg.InputPeerClass,chatID int64,ids []int,label string){b.executeTransferWithTopic(ctx,userID,api,source,chatID,ids,label,0)}
+func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *tg.Client, source tg.InputPeerClass, chatID int64, ids []int, label string, destinationTopicID int) {
 	if b.storage == nil {
 		_ = b.sendMessage(ctx, chatID, "Storage uploader is not configured.")
 		return
@@ -442,7 +469,10 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 					items = append(items, storage.AlbumItem{Path:item.Path, Filename:item.Name, MIME:item.MIME, Kind:item.Kind, Caption:item.Caption, Attributes:item.Attributes, Entities:item.Entities})
 				}
 				if progress != nil { progress.update(ctx,"Uploading album",i+1,done,failed,skipped,true) }
-				updates, uploadErr := b.storage.UploadAlbumToWithProgress(ctx, destinationPeer, items, func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading album",current,total,i+1,done,failed,skipped)}})
+				var updates tg.UpdatesClass
+				var uploadErr error
+				albumProgress:=func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading album",current,total,i+1,done,failed,skipped)}}
+				if destinationTopicID>0 { updates,uploadErr=b.storage.UploadAlbumToForumTopicWithProgress(ctx,destinationPeer,destinationTopicID,items,albumProgress) } else { updates,uploadErr=b.storage.UploadAlbumToWithProgress(ctx,destinationPeer,items,albumProgress) }
 				for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
 				if uploadErr != nil {
 					failed += groupLen
@@ -466,7 +496,10 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 		downloaded, downloadErr := media.DownloadMessageWithProgress(ctx, api, elem, b.tempDir, func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Downloading",current,total,i+1,done,failed,skipped)}})
 		if downloadErr != nil {
 			if msg, ok := elem.Msg.(*tg.Message); ok && strings.TrimSpace(msg.Message) != "" && msg.Media == nil {
-				if updates, textErr := b.storage.SendTextTo(ctx, destinationPeer, msg.Message); textErr != nil {
+				var updates tg.UpdatesClass
+				var textErr error
+				if destinationTopicID>0 { updates,textErr=b.storage.SendTextToForumTopic(ctx,destinationPeer,destinationTopicID,msg.Message) } else { updates,textErr=b.storage.SendTextTo(ctx,destinationPeer,msg.Message) }
+				if textErr != nil {
 					failed++
 					_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] text upload failed for message %d: %v", label, i+1, len(ids), id, textErr))
 				} else { done++; resultRefs = append(resultRefs, destinationMessageRefs(d, updates)...)}
@@ -478,7 +511,10 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 			continue
 		}
 		if progress != nil { progress.update(ctx,"Uploading",i+1,done,failed,skipped,false) }
-		updates, uploadErr := b.storage.UploadPathToWithProgress(ctx, destinationPeer, downloaded.Path, downloaded.Name, downloaded.MIME, downloaded.Caption, downloaded.Kind, downloaded.Attributes, downloaded.Entities, func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading",current,total,i+1,done,failed,skipped)}})
+		uploadProgress:=func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading",current,total,i+1,done,failed,skipped)}}
+		var updates tg.UpdatesClass
+		var uploadErr error
+		if destinationTopicID>0 { updates,uploadErr=b.storage.UploadPathToForumTopicWithProgress(ctx,destinationPeer,destinationTopicID,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes,downloaded.Entities,uploadProgress) } else { updates,uploadErr=b.storage.UploadPathToWithProgress(ctx,destinationPeer,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes,downloaded.Entities,uploadProgress) }
 		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
 			failed++
@@ -569,9 +605,12 @@ func parseChatLink(raw string)(string,int64,error){
 	if len(parts)==2 && validChatUsername(parts[0]) {
 		if _, e := strconv.Atoi(parts[1]); e == nil { parts = parts[:1] }
 	}
-	if len(parts)==3 && parts[0]=="c" {
-		if _, e := strconv.Atoi(parts[2]); e == nil { parts = parts[:2] }
+	if len(parts)==4 && parts[0]=="c" {
+		channel,e1:=strconv.ParseInt(parts[1],10,64);topic,e2:=strconv.Atoi(parts[2]);post,e3:=strconv.Atoi(parts[3])
+		if e1==nil&&e2==nil&&e3==nil&&channel>0&&topic>0&&post>0{parts=parts[:2]}
 	}
+	if len(parts)==3 && parts[0]=="c" { if _,e:=strconv.Atoi(parts[2]);e==nil{parts=parts[:2]} }
+	if len(parts)==3 && validChatUsername(parts[0]) { if _,e1:=strconv.Atoi(parts[1]);e1==nil{if _,e2:=strconv.Atoi(parts[2]);e2==nil{parts=parts[:1]}} }
 	if len(parts)==1&&validChatUsername(parts[0]){return parts[0],0,nil}
 	if len(parts)==2&&parts[0]=="c"{id,e:=strconv.ParseInt(parts[1],10,64);if e==nil&&id>0{return "",id,nil}}
 	return "",0,fmt.Errorf("Use a chat link like https://t.me/username, https://t.me/username/123, or https://t.me/c/CHANNEL_ID/123")

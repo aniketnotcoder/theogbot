@@ -28,9 +28,10 @@ type TransferProgress func(current, total int64)
 // retries after connection loss; do not retry an uncertain final message send.
 const uploadThreads = 8
 const uploadPartSize = uploader.MaximumPartSize
+func uploadWorkerCount() int { n,e:=strconv.Atoi(strings.TrimSpace(os.Getenv("THEOGBOT_UPLOAD_THREADS")));if e!=nil||n<1||n>32{return uploadThreads};return n }
 
 func newTransferUploader(api *tg.Client) *uploader.Uploader {
-	return uploader.NewUploader(api).WithPartSize(uploadPartSize).WithThreads(uploadThreads)
+	return uploader.NewUploader(api).WithPartSize(uploadPartSize).WithThreads(uploadWorkerCount())
 }
 
 type uploadProgress struct { mu sync.Mutex; uploaded map[int64]int64; total int64; callback TransferProgress }

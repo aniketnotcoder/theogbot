@@ -72,3 +72,10 @@ func TestTempFilePatternUsesJPGForPhotos(t *testing.T) {
 		t.Fatalf("video temp pattern = %q, want unchanged generic pattern", got)
 	}
 }
+
+func TestDownloadWorkerCountReadsBoundedRailwaySetting(t *testing.T) {
+	t.Setenv("THEOGBOT_DOWNLOAD_THREADS","16")
+	if got:=downloadWorkerCount();got!=16 { t.Fatalf("downloadWorkerCount()=%d, want 16",got) }
+	t.Setenv("THEOGBOT_DOWNLOAD_THREADS","0")
+	if got:=downloadWorkerCount();got!=8 { t.Fatalf("invalid download worker count=%d, want default 8",got) }
+}

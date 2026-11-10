@@ -14,6 +14,8 @@ func TestParseChatLink(t *testing.T) {
 		{name: "public post permalink identifies chat", input: "https://t.me/example_channel/42", wantUsername: "example_channel"},
 		{name: "private channel", input: "https://t.me/c/123456789", wantChannelID: 123456789},
 		{name: "private post permalink identifies chat", input: "https://t.me/c/123456789/42", wantChannelID: 123456789},
+		{name: "private forum permalink identifies chat", input: "https://t.me/c/123456789/55/99", wantChannelID: 123456789},
+		{name: "public forum permalink identifies chat", input: "https://t.me/example_channel/55/99", wantUsername: "example_channel"},
 		{name: "telegram.me domain", input: "https://telegram.me/example_channel/42", wantUsername: "example_channel"},
 		{name: "unsupported host", input: "https://example.com/example_channel", wantErr: true},
 		{name: "invalid private id", input: "https://t.me/c/not-a-number", wantErr: true},
