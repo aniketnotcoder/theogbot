@@ -132,13 +132,14 @@ func (c *Client) WaitUntilReady(ctx context.Context, hashedID string) (MediaInfo
 	defer ticker.Stop()
 	for {
 		info, err := c.GetMedia(ctx, hashedID)
-		if err == nil {
-			switch strings.ToLower(info.Status) {
-			case "ready":
-				return info, nil
-			case "failed", "error":
-				return info, fmt.Errorf("%w: %s", ErrMediaProcessingFailed, info.Status)
-			}
+		if err != nil {
+			return MediaInfo{}, err
+		}
+		switch strings.ToLower(info.Status) {
+		case "ready":
+			return info, nil
+		case "failed", "error":
+			return info, fmt.Errorf("%w: %s", ErrMediaProcessingFailed, info.Status)
 		}
 		select {
 		case <-ctx.Done():
