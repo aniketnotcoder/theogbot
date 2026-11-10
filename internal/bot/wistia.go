@@ -172,6 +172,57 @@ func (b *Bot) runWistiaCopy(parent context.Context, userID, chatID int64, rawCha
 	b.uploadWistiaIDs(ctx, userID, api, source, chatID, ids, "Wistia copy", "")
 }
 
+// runWistiaResume continues a partially completed Wistia migration from an
+// inclusive Telegram message-ID range. For forums, it resolves every message
+// back to its topic and keeps topic labels in Wistia media names.
+func (b *Bot) runWistiaResume(parent context.Context, userID, chatID int64, rawLink string, start, end int) {
+	ctx := parent
+	if !b.requireWistia(ctx, chatID) { return }
+	api, ok := b.accounts.API(userID)
+	if !ok { _ = b.sendMessage(ctx, chatID, "Connect your Telegram account first using /login."); return }
+	source, linkedID, err := b.resolveWistiaSource(ctx, api, rawLink)
+	if err != nil { _ = b.sendMessage(ctx, chatID, err.Error()); return }
+	if linkedID != start || start <= 0 || end < start {
+		_ = b.sendMessage(ctx, chatID, "Resume range does not match the linked Telegram post.")
+		return
+	}
+	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Resuming Wistia migration from Telegram message %d through %d. Previously completed messages before %d will not be uploaded again.", start, end, start))
+
+	topics, forumErr := forward.FetchForumTopics(ctx, api, source, 50000)
+	if forumErr == nil {
+		selected := filterWistiaForumRange(topics, start, end)
+		if len(selected) == 0 {
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("No accessible forum messages found in range %d-%d.", start, end))
+			return
+		}
+		total := 0
+		for _, topic := range selected { total += len(topic.IDs) }
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Forum resume: %d topics and %d source messages in range. Topic labels will be retained.", len(selected), total))
+		for _, topic := range selected {
+			if ctx.Err() != nil { break }
+			title := strings.TrimSpace(topic.Title)
+			if title == "" { title = fmt.Sprintf("Topic %d", topic.ID) }
+			b.uploadWistiaIDs(ctx, userID, api, source, chatID, topic.IDs, "Wistia resume · "+title, title)
+		}
+		if ctx.Err() == nil { _ = b.sendMessage(ctx, chatID, "Wistia forum resume finished. Topic labels were retained in media names.") }
+		return
+	}
+	if !errors.Is(forumErr, forward.ErrNotForum) {
+		_ = b.sendMessage(ctx, chatID, "Forum inspection failed; resume stopped without uploading: "+forumErr.Error())
+		return
+	}
+
+	ids, err := forward.FetchHistoryIDs(ctx, api, source, 50000)
+	if err != nil { _ = b.sendMessage(ctx, chatID, "History retrieval failed: "+err.Error()); return }
+	selected := make([]int, 0)
+	for _, id := range ids { if id >= start && id <= end { selected = append(selected, id) } }
+	if len(selected) == 0 {
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("No accessible messages found in range %d-%d.", start, end))
+		return
+	}
+	b.uploadWistiaIDs(ctx, userID, api, source, chatID, selected, "Wistia resume", "")
+}
+
 func isWistiaVideo(elem messages.Elem) bool {
 	if _, ok := elem.Msg.(*tg.Message); !ok { return false }
 	doc, ok := elem.Document()
