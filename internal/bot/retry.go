@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/aniketnotcoder/theogbot/internal/media"
 	"github.com/aniketnotcoder/theogbot/internal/storage"
 	"github.com/gotd/td/tg"
 )
@@ -20,7 +19,8 @@ func (b *Bot) retryFailedUploads(
 	destinationTopicID int,
 	tasks []retryTask,
 	progress *progressReporter,
-	total, done, failed, skipped int,
+	chatID int64,
+	done, failed, skipped int,
 ) (int, []string) {
 	var succeeded int
 	var refs []string
@@ -81,7 +81,7 @@ func (b *Bot) retryFailedUploads(
 
 		if uploadErr != nil {
 			b.log.Warn("end-of-batch upload retry failed", "label", label, "first_index", task.firstIndex, "error", uploadErr)
-			_ = b.sendMessage(ctx, dest.ChatID, fmt.Sprintf("%s retry failed for original item %d: %v", label, task.firstIndex, uploadErr))
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s retry failed for original item %d: %v", label, task.firstIndex, uploadErr))
 		} else {
 			succeeded += len(task.items)
 			refs = append(refs, destinationMessageRefs(dest, updates)...)
@@ -92,9 +92,7 @@ func (b *Bot) retryFailedUploads(
 				b.log.Warn("retry temp cleanup failed", "path", item.Path, "error", cleanupErr)
 			}
 		}
-		_ = total
 	}
 	return succeeded, refs
 }
 
-var _ = media.Downloaded{}
