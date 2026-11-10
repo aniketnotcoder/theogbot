@@ -33,12 +33,12 @@ func (c *Client) UploadPath(ctx context.Context, filePath, displayName string, p
 	source := func(ctx context.Context, dst io.Writer) (int64, error) {
 		return copyWithProgress(ctx, dst, f, info.Size(), progress)
 	}
-	return c.UploadSource(ctx, filename, displayName, info.Size(), source, progress)
+	return c.UploadSource(ctx, filename, displayName, info.Size(), source)
 }
 
 // UploadSource streams a known-size source into Wistia without buffering the media.
 // Source is called once in a producer goroutine and must return the exact number of bytes written.
-func (c *Client) UploadSource(ctx context.Context, filename, displayName string, size int64, source Source, progress ProgressFunc) (UploadResult, error) {
+func (c *Client) UploadSource(ctx context.Context, filename, displayName string, size int64, source Source) (UploadResult, error) {
 	if c == nil { return UploadResult{}, fmt.Errorf("Wistia client is nil") }
 	if size <= 0 { return UploadResult{}, fmt.Errorf("video size must be greater than zero") }
 	if source == nil { return UploadResult{}, fmt.Errorf("upload source is required") }
@@ -141,10 +141,30 @@ func writeMultipart(ctx context.Context, dst *io.PipeWriter, boundary, folderID,
 	if err := writeFields(mw, folderID, displayName); err != nil { return err }
 	part, err := mw.CreateFormFile("file", filename)
 	if err != nil { return err }
-	written, sourceErr := source(ctx, part)
+	guard := &exactSizeWriter{w: part, remaining: expected}
+	reported, sourceErr := source(ctx, guard)
 	if sourceErr != nil { return sourceErr }
-	if written != expected { return fmt.Errorf("source size mismatch: declared %d bytes, wrote %d", expected, written) }
+	if reported != expected || guard.written != expected {
+		return fmt.Errorf("source size mismatch: declared %d bytes, source reported %d, wrote %d", expected, reported, guard.written)
+	}
 	return mw.Close()
+}
+
+type exactSizeWriter struct {
+	w io.Writer
+	remaining int64
+	written int64
+}
+
+func (w *exactSizeWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.remaining {
+		return 0, fmt.Errorf("source exceeded declared upload size")
+	}
+	n, err := w.w.Write(p)
+	w.remaining -= int64(n)
+	w.written += int64(n)
+	if err == nil && n != len(p) { err = io.ErrShortWrite }
+	return n, err
 }
 
 func parseUploadResult(body []byte) (UploadResult, error) {
