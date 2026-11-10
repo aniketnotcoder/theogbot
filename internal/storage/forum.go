@@ -8,5 +8,51 @@ func findForumTopicID(ts []ForumTopicInfo,title string)int{for _,t:=range ts{if 
 func forumReplyTo(id int)tg.InputReplyToClass{return &tg.InputReplyToMessage{ReplyToMsgID:id}}
 func(c *Client)SendTextToForumTopic(ctx context.Context,dest tg.InputPeerClass,topicID int,text string)(tg.UpdatesClass,error){if topicID<=0||strings.TrimSpace(text)==""{return nil,errors.New("valid destination topic and non-empty text are required")};if e:=c.Ready(ctx);e!=nil{return nil,e};c.mu.RLock();api:=c.api;c.mu.RUnlock();rid,e:=crypto.RandInt64(crypto.DefaultRand());if e!=nil{return nil,e};return retryFloodWait(ctx,func()(tg.UpdatesClass,error){return api.MessagesSendMessage(ctx,&tg.MessagesSendMessageRequest{Peer:dest,ReplyTo:forumReplyTo(topicID),Message:text,RandomID:rid})})}
 func(c *Client)UploadPathToForumTopicWithProgress(ctx context.Context,dest tg.InputPeerClass,topicID int,path,filename,mime,caption,kind string,attrs []tg.DocumentAttributeClass,entities []tg.MessageEntityClass,progress TransferProgress)(tg.UpdatesClass,error){if topicID<=0{return nil,errors.New("valid destination forum topic is required")};if e:=c.Ready(ctx);e!=nil{return nil,e};c.mu.RLock();api:=c.api;c.mu.RUnlock();info,e:=os.Stat(path);if e!=nil{return nil,fmt.Errorf("stat upload file: %w",e)};rid,e:=crypto.RandInt64(crypto.DefaultRand());if e!=nil{return nil,e};return retryFloodWait(ctx,func()(tg.UpdatesClass,error){u:=newTransferUploader(api).WithProgress(&uploadProgress{total:info.Size(),callback:progress});file,e:=u.FromPath(ctx,path);if e!=nil{return nil,fmt.Errorf("upload file: %w",e)};text,ents,e:=buildCaption(caption,entities);if e!=nil{return nil,e};var media tg.InputMediaClass;if kind=="photo"{media=&tg.InputMediaUploadedPhoto{File:file}}else{attrsOut:=make([]tg.DocumentAttributeClass,0,len(attrs)+1);for _,a:=range attrs{if _,ok:=a.(*tg.DocumentAttributeFilename);!ok{attrsOut=append(attrsOut,a)}};if filename!=""{attrsOut=append(attrsOut,&tg.DocumentAttributeFilename{FileName:filename})};if mime==""{mime="application/octet-stream"};media=&tg.InputMediaUploadedDocument{File:file,MimeType:mime,Attributes:attrsOut}};return api.MessagesSendMedia(ctx,&tg.MessagesSendMediaRequest{Peer:dest,ReplyTo:forumReplyTo(topicID),Media:media,Message:text,Entities:ents,RandomID:rid})})}
-func(c *Client)UploadAlbumToForumTopicWithProgress(ctx context.Context,dest tg.InputPeerClass,topicID int,items []AlbumItem,progress TransferProgress)(tg.UpdatesClass,error){if topicID<=0{return nil,errors.New("valid destination forum topic is required")};if len(items)<2||len(items)>10{return nil,fmt.Errorf("album must contain between 2 and 10 items")};if e:=c.Ready(ctx);e!=nil{return nil,e};c.mu.RLock();api:=c.api;c.mu.RUnlock();var total int64;randomIDs:=make([]int64,len(items));for i,item:=range items{if item.Kind!="photo"&&item.Kind!="video"{return nil,fmt.Errorf("album item %d has unsupported kind %q",i+1,item.Kind)};info,e:=os.Stat(item.Path);if e!=nil{return nil,fmt.Errorf("stat album item %d: %w",i+1,e)};total+=info.Size();randomIDs[i],e=crypto.RandInt64(crypto.DefaultRand());if e!=nil{return nil,e}};return retryFloodWait(ctx,func()(tg.UpdatesClass,error){u:=newTransferUploader(api).WithProgress(&uploadProgress{total:total,callback:progress});mediaItems:=make([]tg.InputSingleMedia,0,len(items));for i,item:=range items{file,e:=u.FromPath(ctx,item.Path);if e!=nil{return nil,fmt.Errorf("upload album item %d: %w",i+1,e)};text,ents,e:=buildCaption(item.Caption,item.Entities);if e!=nil{return nil,e};var media tg.InputMediaClass;if item.Kind=="photo"{media=&tg.InputMediaUploadedPhoto{File:file}}else{attrs:=make([]tg.DocumentAttributeClass,0,len(item.Attributes)+1);for _,a:=range item.Attributes{if _,ok:=a.(*tg.DocumentAttributeFilename);!ok{attrs=append(attrs,a)}};if item.Filename!=""{attrs=append(attrs,&tg.DocumentAttributeFilename{FileName:item.Filename})};mime:=item.MIME;if mime==""{mime="application/octet-stream"};media=&tg.InputMediaUploadedDocument{File:file,MimeType:mime,Attributes:attrs}};mediaItems=append(mediaItems,tg.InputSingleMedia{Media:media,Message:text,Entities:ents,RandomID:randomIDs[i]})};return api.MessagesSendMultiMedia(ctx,&tg.MessagesSendMultiMediaRequest{Peer:dest,ReplyTo:forumReplyTo(topicID),MultiMedia:mediaItems})})}
+func(c *Client)UploadAlbumToForumTopicWithProgress(ctx context.Context,dest tg.InputPeerClass,topicID int,items []AlbumItem,progress TransferProgress)(tg.UpdatesClass,error){
+ if topicID<=0{return nil,errors.New("valid destination forum topic is required")}
+ if len(items)<2||len(items)>10{return nil,fmt.Errorf("album must contain between 2 and 10 items")}
+ if e:=c.Ready(ctx);e!=nil{return nil,e}
+ c.mu.RLock();api:=c.api;c.mu.RUnlock()
+ var total int64
+ randomIDs:=make([]int64,len(items))
+ for i,item:=range items{
+  if item.Kind!="photo"&&item.Kind!="video"{return nil,fmt.Errorf("album item %d has unsupported kind %q",i+1,item.Kind)}
+  info,e:=os.Stat(item.Path);if e!=nil{return nil,fmt.Errorf("stat album item %d: %w",i+1,e)}
+  total+=info.Size();randomIDs[i],e=crypto.RandInt64(crypto.DefaultRand());if e!=nil{return nil,e}
+ }
+ return retryFloodWait(ctx,func()(tg.UpdatesClass,error){
+  u:=newTransferUploader(api).WithProgress(&uploadProgress{total:total,callback:progress})
+  mediaItems:=make([]tg.InputSingleMedia,0,len(items))
+  for i,item:=range items{
+   file,e:=u.FromPath(ctx,item.Path);if e!=nil{return nil,fmt.Errorf("upload album item %d: %w",i+1,e)}
+   var uploaded tg.InputMediaClass
+   if item.Kind=="photo"{uploaded=&tg.InputMediaUploadedPhoto{File:file}}else{
+    attrs:=make([]tg.DocumentAttributeClass,0,len(item.Attributes)+1)
+    for _,a:=range item.Attributes{if _,ok:=a.(*tg.DocumentAttributeFilename);!ok{attrs=append(attrs,a)}}
+    if item.Filename!=""{attrs=append(attrs,&tg.DocumentAttributeFilename{FileName:item.Filename})}
+    mime:=item.MIME;if mime==""{mime="application/octet-stream"}
+    uploaded=&tg.InputMediaUploadedDocument{File:file,MimeType:mime,Attributes:attrs}
+   }
+   // Telegram requires messages.uploadMedia before uploaded media can be
+   // included in messages.sendMultiMedia. Convert the returned media reference
+   // to InputMediaPhoto/InputMediaDocument, matching gotd's Sender.Album path.
+   uploadedResult,e:=api.MessagesUploadMedia(ctx,&tg.MessagesUploadMediaRequest{Peer:dest,Media:uploaded})
+   if e!=nil{return nil,fmt.Errorf("prepare album item %d for destination: %w",i+1,e)}
+   var inputMedia tg.InputMediaClass
+   switch value:=uploadedResult.(type){
+   case *tg.MessageMediaPhoto:
+    photo,ok:=value.Photo.AsNotEmpty();if !ok{return nil,fmt.Errorf("album item %d returned an empty photo reference",i+1)}
+    inputMedia=&tg.InputMediaPhoto{ID:photo.AsInput(),TTLSeconds:value.TTLSeconds}
+   case *tg.MessageMediaDocument:
+    doc,ok:=value.Document.AsNotEmpty();if !ok{return nil,fmt.Errorf("album item %d returned an empty document reference",i+1)}
+    inputMedia=&tg.InputMediaDocument{ID:doc.AsInput(),TTLSeconds:value.TTLSeconds}
+   default:
+    return nil,fmt.Errorf("album item %d returned unsupported uploaded media %T",i+1,uploadedResult)
+   }
+   text,ents,e:=buildCaption(item.Caption,item.Entities);if e!=nil{return nil,e}
+   mediaItems=append(mediaItems,tg.InputSingleMedia{Media:inputMedia,Message:text,Entities:ents,RandomID:randomIDs[i]})
+  }
+  return api.MessagesSendMultiMedia(ctx,&tg.MessagesSendMultiMediaRequest{Peer:dest,ReplyTo:forumReplyTo(topicID),MultiMedia:mediaItems})
+ })
+}
 func buildCaption(caption string,entities []tg.MessageEntityClass)(string,[]tg.MessageEntityClass,error){if caption==""{return "",nil,nil};opts:=captionOptions(caption,entities);if len(opts)==0{return caption,nil,nil};builder:=entity.Builder{};if e:=styling.Perform(&builder,opts...);e!=nil{return "",nil,e};text,formatted:=builder.Complete();return text,formatted,nil}
