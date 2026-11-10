@@ -185,7 +185,9 @@ func mp4AssetURL(assetURL, name string) string {
 	filename := safeFilename(name)
 	ext := strings.ToLower(path.Ext(filename))
 	if ext != ".mp4" { filename = strings.TrimSuffix(filename, path.Ext(filename)) + ".mp4" }
-	u.Path = strings.TrimSuffix(u.Path, ".bin") + "/" + filename
+	u.Path = strings.TrimSuffix(u.Path, path.Ext(u.Path)) + "/" + filename
+	if strings.EqualFold(u.Host, "embed.wistia.com") { u.Host = "embed-ssl.wistia.com" }
+	u.Scheme = "https"
 	return u.String()
 }
 
