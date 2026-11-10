@@ -223,3 +223,24 @@ func TestAddStorageUpdatesExistingEntryWithoutDuplicate(t *testing.T) {
 	if got:=len(b.getStorageHistory(1));got!=1{t.Fatalf("history length = %d, want 1",got)}
 	if active,_:=b.getDestination(1);active.Title!="Renamed"{t.Fatalf("active title = %q",active.Title)}
 }
+
+
+func TestProgressStageRecognizesWistiaPhases(t *testing.T) {
+	for input, want := range map[string]string{
+		"Downloading with parallel workers": "Downloading",
+		"Uploading to Wistia": "Uploading",
+		"Streaming to Wistia": "Uploading",
+		"Wistia processing": "Processing",
+	} {
+		if got := progressStage(input); got != want {
+			t.Errorf("progressStage(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestWistiaProcessingProgressRemainsAtHundredPercent(t *testing.T) {
+	got := formatProgress("Wistia upload", "Wistia processing", 1, 1, 0, 0, 0, 0, 0, 0, time.Minute)
+	if !strings.Contains(got, "Processing  ·  100%") {
+		t.Fatalf("processing should remain at 100%% while Wistia prepares the media: %s", got)
+	}
+}

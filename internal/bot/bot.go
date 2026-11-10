@@ -127,7 +127,8 @@ func progressStage(stage string) string {
 	switch {
 	case strings.Contains(s,"cancel"): return "Cancelling"
 	case strings.Contains(s,"finish"): return "Finishing"
-	case strings.Contains(s,"upload"): return "Uploading"
+	case strings.Contains(s,"process"): return "Processing"
+	case strings.Contains(s,"upload"), strings.Contains(s,"stream"): return "Uploading"
 	case strings.Contains(s,"download"): return "Downloading"
 	case strings.Contains(s,"retriev"),strings.Contains(s,"ready"),strings.Contains(s,"prepar"): return "Preparing"
 	default: return "Transferring"
@@ -138,6 +139,7 @@ func formatProgress(label, stage string, current, total, done, failed, skipped i
 	processed:=done+failed+skipped
 	percent:=0
 	if total>0 { percent=processed*100/total }
+	if strings.Contains(strings.ToLower(stage),"process") { percent=100 }
 	if percent>100 { percent=100 }
 	if byteTotal>0 {
 		bytePercent:=int(float64(byteCurrent)*100/float64(byteTotal))
@@ -314,12 +316,12 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		} else if b.wistia == nil {
 			reply = "Wistia upload is not configured. Set WISTIA_API_TOKEN and WISTIA_PROJECT_ID in Railway, then redeploy."
 		} else if len(fields) < 2 || len(fields) > 3 {
-			reply = "Usage: /wistia https://t.me/channel/123 [stream|parallel]"
+			reply = "Usage: /wistia https://t.me/channel/123 [parallel|stream] (parallel is the default)"
 		} else {
-			mode := "stream"
+			mode := "parallel"
 			if len(fields) == 3 { mode = strings.ToLower(fields[2]) }
 			if mode != "stream" && mode != "parallel" {
-				reply = "Mode must be stream (zero disk) or parallel (temporary disk, parallel Telegram download)."
+				reply = "Mode must be parallel (default, temporary disk and parallel Telegram download) or stream (zero disk)."
 			} else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok {
 				reply = "A transfer is already running. Send /cancel first."
 			} else {
@@ -513,15 +515,41 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 				albumProgress:=func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading album",current,total,i+1,done,failed,skipped)}}
 				if destinationTopicID>0 { updates,uploadErr=b.storage.UploadAlbumToForumTopicWithProgress(ctx,destinationPeer,destinationTopicID,items,albumProgress) } else { updates,uploadErr=b.storage.UploadAlbumToWithProgress(ctx,destinationPeer,items,albumProgress) }
 				if uploadErr != nil {
-					failed += groupLen
-					for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
-					retryTasks = append(retryTasks, retryTask{elements: append([]messages.Elem(nil), elements[i:i+groupLen]...), ids: append([]int(nil), ids[i:i+groupLen]...), album: true, firstIndex: i+1})
-					_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s album [%d-%d/%d] upload failed; queued for one retry at the end: %v", label, i+1, i+groupLen, len(ids), uploadErr))
+					if strings.Contains(strings.ToUpper(uploadErr.Error()), "MEDIA_INVALID") {
+						// Telegram rejected the grouped media request. Preserve every
+						// album member by falling back to individual message uploads.
+						_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s album [%d-%d/%d] was rejected as MEDIA_INVALID; retrying its items individually.", label, i+1, i+groupLen, len(ids)))
+						for j, item := range downloads {
+							if ctx.Err() != nil { break }
+							itemProgress := func(current, total int64) {
+								if progress != nil { progress.updateBytes(ctx, "Uploading album item", current, total, i+j+1, done, failed, skipped) }
+							}
+							var itemUpdates tg.UpdatesClass
+							var itemErr error
+							if destinationTopicID > 0 {
+								itemUpdates, itemErr = b.storage.UploadPathToForumTopicWithProgress(ctx, destinationPeer, destinationTopicID, item.Path, item.Name, item.MIME, item.Caption, item.Kind, item.Attributes, item.Entities, itemProgress)
+							} else {
+								itemUpdates, itemErr = b.storage.UploadPathToWithProgress(ctx, destinationPeer, item.Path, item.Name, item.MIME, item.Caption, item.Kind, item.Attributes, item.Entities, itemProgress)
+							}
+							if itemErr != nil {
+								failed++
+								retryTasks = append(retryTasks, retryTask{elements: []messages.Elem{elements[i+j]}, ids: []int{ids[i+j]}, firstIndex: i+j+1})
+								_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] album fallback failed for message %d; queued for one retry: %v", label, i+j+1, len(ids), ids[i+j], itemErr))
+							} else {
+								done++
+								resultRefs = append(resultRefs, destinationMessageRefs(d, itemUpdates)...)
+							}
+						}
+					} else {
+						failed += groupLen
+						retryTasks = append(retryTasks, retryTask{elements: append([]messages.Elem(nil), elements[i:i+groupLen]...), ids: append([]int(nil), ids[i:i+groupLen]...), album: true, firstIndex: i+1})
+						_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s album [%d-%d/%d] upload failed; queued for one retry at the end: %v", label, i+1, i+groupLen, len(ids), uploadErr))
+					}
 				} else {
-					for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
 					done += groupLen
 					resultRefs = append(resultRefs, destinationMessageRefs(d, updates)...)
 				}
+				for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
 				if progress != nil { progress.update(ctx,"Transferring",i,done,failed,skipped,false) }
 				i += groupLen
 				continue
@@ -988,7 +1016,7 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 			"3. Join storage: open the invite link from the account you want to use to view your files. This is important when it is different from your connected source account.\n" +
 			"4. Batch transfer: paste post links, or use /batch <chat-link> 61 to 309 for an inclusive ID range.\n" +
 			"5. Copy history: paste a chat link to copy its accessible history.\n" +
-			"6. Wistia: use /wistia <post-link> [stream|parallel] to upload a video.\n\n" +
+			"6. Wistia: use /wistia <post-link> [parallel|stream] (parallel is the default) to upload a video.\n\n" +
 			"Use Cancel transfer whenever you need to stop a running job."
 	}
 	markup := map[string]any{"inline_keyboard": [][]map[string]string{
@@ -1078,10 +1106,10 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,batchLinks)}()}
 		case "wistia":
 			fields := strings.Fields(value)
-			if len(fields) < 1 || len(fields) > 2 { _ = b.sendMessage(ctx,msg.Chat.ID,"Send one Telegram video post link, optionally followed by stream or parallel."); return true }
-			mode := "stream"
+			if len(fields) < 1 || len(fields) > 2 { _ = b.sendMessage(ctx,msg.Chat.ID,"Send one Telegram video post link. Parallel is the default; add stream for zero-disk mode."); return true }
+			mode := "parallel"
 			if len(fields) == 2 { mode = strings.ToLower(fields[1]) }
-			if mode != "stream" && mode != "parallel" { _ = b.sendMessage(ctx,msg.Chat.ID,"Mode must be stream or parallel."); return true }
+			if mode != "stream" && mode != "parallel" { _ = b.sendMessage(ctx,msg.Chat.ID,"Mode must be parallel or stream."); return true }
 			if b.wistia == nil { _ = b.sendMessage(ctx,msg.Chat.ID,"Wistia is not configured on this deployment."); return true }
 			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok { _ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.") } else { go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],mode)}() }
 		case "copy":
@@ -1156,7 +1184,7 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	case "transfer:wistia":
 		if b.wistia == nil { _ = b.sendMessage(ctx,chatID,"Wistia is not configured on this deployment."); return }
 		b.setPendingInput(userID,"wistia")
-		b.sendForceReply(ctx,chatID,"Send a Telegram video post link. Use /wistia <post-link> [stream|parallel] for explicit mode.","Telegram video post link")
+		b.sendForceReply(ctx,chatID,"Send a Telegram video post link. Use /wistia <post-link> [parallel|stream] (parallel is the default) for explicit mode.","Telegram video post link")
 	case "job:cancel":
 		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
 	case "account:logout":

@@ -1,6 +1,6 @@
 package storage
 
-import ("testing"; "context"; "github.com/gotd/td/tg"
+import ("testing"; "context"; "fmt"; "github.com/gotd/td/tg"
 	"github.com/gotd/td/telegram/uploader")
 
 func TestNewAllowsPerUserDestinationConfiguration(t *testing.T) {
@@ -91,8 +91,8 @@ func TestLargeFileUploaderUsesMaximumTelegramPartSize(t *testing.T) {
 	if uploadPartSize != 512*1024 {
 		t.Fatalf("upload part size = %d, want Telegram maximum 512 KiB", uploadPartSize)
 	}
-	if uploadThreads != 8 {
-		t.Fatalf("upload workers = %d, want configured starting point 8", uploadThreads)
+	if uploadThreads != 4 {
+		t.Fatalf("upload workers = %d, want safer default 4", uploadThreads)
 	}
 	const largeFileSize int64 = 208 * 1024 * 1024
 	parts := (largeFileSize + int64(uploadPartSize) - 1) / int64(uploadPartSize)
@@ -131,4 +131,23 @@ func TestFindForumTopicIDMatchesNormalizedTitle(t *testing.T) {
 	topics:=[]ForumTopicInfo{{ID:10,Title:"  1. Frontend  "},{ID:20,Title:"2. Backend"}}
 	if got:=findForumTopicID(topics,"1. Frontend");got!=10 { t.Fatalf("topic ID=%d, want 10",got) }
 	if got:=findForumTopicID(topics,"Missing");got!=0 { t.Fatalf("missing topic ID=%d, want 0",got) }
+}
+
+
+func TestRetryableUploadPartErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		message string
+		want bool
+	}{
+		{"upload part: engine forcibly closed: context canceled", true},
+		{"connection reset by peer", true},
+		{"i/o timeout", true},
+		{"rpc error code 400: MEDIA_INVALID", false},
+		{"rpc error code 400: FILE_PART_INVALID", false},
+		{"invalid destination peer", false},
+	} {
+		if got := retryableUploadPartError(fmt.Errorf("%s", tc.message)); got != tc.want {
+			t.Errorf("retryableUploadPartError(%q) = %v, want %v", tc.message, got, tc.want)
+		}
+	}
 }
