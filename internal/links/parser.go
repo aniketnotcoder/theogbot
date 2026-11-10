@@ -56,6 +56,24 @@ func Parse(raw string) (MessageLink, error) {
 		}
 		return MessageLink{Username: parts[0], MessageID: id}, nil
 	}
+	// Forum message permalinks include the topic ID before the actual post ID:
+	// public: https://t.me/<username>/<topic_id>/<message_id>
+	// private: https://t.me/c/<internal_channel_id>/<topic_id>/<message_id>.
+	if len(parts) == 3 && parts[0] != "c" {
+		id, err := strconv.Atoi(parts[2])
+		topicID, topicErr := strconv.Atoi(parts[1])
+		if err == nil && topicErr == nil && id > 0 && topicID > 0 && validUsername(parts[0]) {
+			return MessageLink{Username: parts[0], MessageID: id}, nil
+		}
+	}
+	if len(parts) == 4 && parts[0] == "c" {
+		channel, channelErr := strconv.ParseInt(parts[1], 10, 64)
+		topicID, topicErr := strconv.Atoi(parts[2])
+		id, idErr := strconv.Atoi(parts[3])
+		if channelErr == nil && topicErr == nil && idErr == nil && channel > 0 && topicID > 0 && id > 0 {
+			return MessageLink{ChannelID: channel, MessageID: id}, nil
+		}
+	}
 	// Private channel post links: https://t.me/c/<internal_channel_id>/<message_id>.
 	if len(parts) == 3 && parts[0] == "c" {
 		channel, e1 := strconv.ParseInt(parts[1], 10, 64)
