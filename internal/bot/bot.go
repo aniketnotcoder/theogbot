@@ -85,6 +85,7 @@ type incomingMessage struct {
 	Video *struct { FileID string `json:"file_id"` } `json:"video"`
 }
 type destination struct { ChatID int64; Title string; Username string }
+type retryTask struct { items []*media.Downloaded; album bool; firstIndex int }
 type otpInput struct { ChatID int64; MessageID int64; Code string; Photo bool }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"`; Photo []json.RawMessage `json:"photo"` }
@@ -475,6 +476,7 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 	if err != nil { if progress != nil { progress.update(ctx,"Failed to retrieve source messages",1,0,1,0,true) }; _ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s could not retrieve the exact requested posts: %v", label, err)); return }
 
 	done, failed, skipped := 0, 0, 0
+	retryTasks := make([]retryTask, 0)
 	if progress != nil { progress.update(ctx,"Ready",1,done,failed,skipped,true) }
 	for i := 0; i < len(ids); {
 		if err := ctx.Err(); err != nil {
@@ -510,11 +512,12 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 				var uploadErr error
 				albumProgress:=func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading album",current,total,i+1,done,failed,skipped)}}
 				if destinationTopicID>0 { updates,uploadErr=b.storage.UploadAlbumToForumTopicWithProgress(ctx,destinationPeer,destinationTopicID,items,albumProgress) } else { updates,uploadErr=b.storage.UploadAlbumToWithProgress(ctx,destinationPeer,items,albumProgress) }
-				for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
 				if uploadErr != nil {
 					failed += groupLen
-					_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s album [%d-%d/%d] upload failed: %v", label, i+1, i+groupLen, len(ids), uploadErr))
+					retryTasks = append(retryTasks, retryTask{items: downloads, album: true, firstIndex: i+1})
+					_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s album [%d-%d/%d] upload failed; queued for one retry at the end: %v", label, i+1, i+groupLen, len(ids), uploadErr))
 				} else {
+					for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
 					done += groupLen
 					resultRefs = append(resultRefs, destinationMessageRefs(d, updates)...)
 				}
@@ -552,16 +555,27 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 		var updates tg.UpdatesClass
 		var uploadErr error
 		if destinationTopicID>0 { updates,uploadErr=b.storage.UploadPathToForumTopicWithProgress(ctx,destinationPeer,destinationTopicID,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes,downloaded.Entities,uploadProgress) } else { updates,uploadErr=b.storage.UploadPathToWithProgress(ctx,destinationPeer,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes,downloaded.Entities,uploadProgress) }
-		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
 			failed++
-			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] upload failed for message %d: %v", label, i+1, len(ids), id, uploadErr))
+			retryTasks = append(retryTasks, retryTask{items: []*media.Downloaded{downloaded}, firstIndex: i+1})
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] upload failed for message %d; queued for one retry at the end: %v", label, i+1, len(ids), id, uploadErr))
 		} else {
-			if cleanupErr != nil { b.log.Warn("temporary file cleanup failed", "path", downloaded.Path, "error", cleanupErr) }
+			if cleanupErr := downloaded.Cleanup(); cleanupErr != nil { b.log.Warn("temporary file cleanup failed", "path", downloaded.Path, "error", cleanupErr) }
 			done++
 			resultRefs = append(resultRefs, destinationMessageRefs(d, updates)...)
 		}
 		i++
+	}
+	if len(retryTasks) > 0 {
+		if ctx.Err() == nil {
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("First pass complete. Retrying %d failed upload group(s) once at the end; no new Telegram downloads are needed.", len(retryTasks)))
+			retried, retryRefs := b.retryFailedUploads(ctx, destinationPeer, d, label, destinationTopicID, retryTasks, progress, len(ids), done, failed, skipped)
+			done += retried
+			failed -= retried
+			resultRefs = append(resultRefs, retryRefs...)
+		} else {
+			for _, task := range retryTasks { for _, item := range task.items { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("retry temp cleanup after cancellation failed", "path", item.Path, "error", cleanupErr) } } }
+		}
 	}
 	if progress != nil { progress.update(ctx,"Finished",len(ids),done,failed,skipped,true) }
 	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s finished. Uploaded: %d, failed: %d, skipped: %d, requested: %d.", label, done, failed, skipped, len(ids)))
