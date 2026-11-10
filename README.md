@@ -75,3 +75,15 @@ The Docker entrypoint fixes ownership of the mounted `/data` volume for UID/GID 
 Storage groups and each user's active destination persist in bbolt across restarts when the volume remains attached. Source Telegram login sessions remain in memory and must be reconnected after a restart. Temporary media remains on ephemeral storage and is cleaned up after transfers.
 
 For a safe live test, use a private test destination, add the configured uploader bot with posting rights, send `/setstorage` and forward a message from that destination, then run `/storage`. Log in with a test source account and transfer a small text/photo/video set with `/batch` or a small history with `/copy`. Confirm progress and destination results, then test `/cancel` on a larger permitted file. Do not test against a production channel until the private test succeeds.
+
+
+## Telegram commands
+
+- `/batch <chat-link> <start> to <end>` — copy an inclusive message-ID range from one chat (for example, `/batch https://t.me/c/4332971248 61 to 309`).
+- `/batch <chat-link> <start>-<end>` — equivalent compact range syntax.
+- `/batch <post-link> [<post-link> ...]` — existing explicit-post batch syntax.
+- `/wistia <post-link> [stream|parallel]` — upload one accessible Telegram video post to the configured Wistia folder. `stream` (default) pipes Telegram download directly into Wistia without a media temp file; `parallel` uses gotd's parallel download into a temporary file before uploading.
+- The Wistia upload command is also available from the private-chat menu. It requires a connected MTProto account and Wistia environment variables.
+
+Wistia variables are optional and do not prevent normal Telegram-to-Telegram transfers from starting:
+`WISTIA_API_TOKEN` (Upload media permission), `WISTIA_DATA_API_TOKEN` (read folder/media permission for readiness polling), and `WISTIA_PROJECT_ID` (destination folder ID). If the Data API token is omitted, the bot reports the Wistia upload result without polling processing status.
