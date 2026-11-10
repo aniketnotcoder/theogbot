@@ -58,7 +58,7 @@ func TestUploadSourceStreamsMultipartWithKnownLength(t *testing.T) {
 	result, err := client.UploadSource(context.Background(), "demo.mp4", "Demo video", int64(len(payload)), func(ctx context.Context, dst io.Writer)(int64,error) {
 		n, err := dst.Write(payload)
 		return int64(n), err
-	}, nil)
+	})
 	if err != nil { t.Fatal(err) }
 	if result.HashedID != "abc123" || result.FolderID != "folder123" { t.Fatalf("unexpected result: %+v", result) }
 	if result.PlayerURL != "https://fast.wistia.net/embed/iframe/abc123" { t.Fatalf("unexpected player URL: %s", result.PlayerURL) }
@@ -101,7 +101,7 @@ func TestUploadSourceRejectsSizeMismatch(t *testing.T) {
 	_, err = client.UploadSource(context.Background(), "x.mp4", "x", 10, func(ctx context.Context, dst io.Writer)(int64,error) {
 		n, writeErr := dst.Write([]byte("short"))
 		return int64(n), writeErr
-	}, nil)
+	})
 	if err == nil || !strings.Contains(err.Error(), "source size mismatch") { t.Fatalf("expected size mismatch, got %v", err) }
 }
 
