@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aniketnotcoder/theogbot/internal/account"
@@ -85,7 +86,7 @@ type otpInput struct { ChatID int64; MessageID int64; Code string; Photo bool }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"`; Photo []json.RawMessage `json:"photo"` }
 
-type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; Photo bool; mu sync.Mutex; last time.Time; displayStage string; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
+type progressReporter struct { bot *Bot; chatID, messageID int64; label string; total int; started time.Time; Photo bool; mu sync.Mutex; sending atomic.Bool; last time.Time; displayStage string; bytesCurrent,bytesTotal int64; speed float64; sampleAt time.Time; sampleBytes int64; sampleStage string; sampleTotal int64 }
 
 func (b *Bot) newProgress(ctx context.Context, chatID int64, label string, total int) (*progressReporter, error) {
 	var sent sentMessage
@@ -193,7 +194,13 @@ func (p *progressReporter) updateBytes(ctx context.Context,stage string,current,
 	p.mu.Lock()
 	p.bytesCurrent,p.bytesTotal=current,total
 	p.mu.Unlock()
-	p.update(ctx,stage,item,done,failed,skipped,false)
+	// Telegram Bot API progress edits are UI-only. Never let a slow edit
+	// hold one of the MTProto download/upload workers on the transfer hot path.
+	if !p.sending.CompareAndSwap(false,true) { return }
+	go func() {
+		defer p.sending.Store(false)
+		p.update(ctx,stage,item,done,failed,skipped,false)
+	}()
 }
 func (p *progressReporter) update(ctx context.Context, stage string, current, done, failed, skipped int, force bool) {
 	if p==nil||p.messageID==0{return};now:=time.Now();p.mu.Lock()
