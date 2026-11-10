@@ -77,8 +77,11 @@ func (c *Client) UploadSource(ctx context.Context, filename, displayName string,
 	if requestErr != nil {
 		_ = reader.CloseWithError(requestErr)
 		cancel()
-		<-producerResult
-		return UploadResult{}, fmt.Errorf("Wistia upload request failed: %w", requestErr)
+		producerErr := <-producerResult
+		if producerErr != nil {
+			return UploadResult{}, fmt.Errorf("stream source to Wistia: %w", producerErr)
+		}
+		return UploadResult{}, fmt.Errorf("%w: %v", ErrUploadOutcomeUnknown, requestErr)
 	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -120,10 +123,14 @@ func multipartOverhead(boundary, folderID, displayName, filename string) (int64,
 }
 
 func writeFields(mw *multipart.Writer, folderID, displayName string) error {
-	for key, value := range map[string]string{"project_id": folderID, "name": displayName} {
-		part, err := mw.CreateFormField(key)
+	fields := []struct{ key, value string }{
+		{key: "project_id", value: folderID},
+		{key: "name", value: displayName},
+	}
+	for _, field := range fields {
+		part, err := mw.CreateFormField(field.key)
 		if err != nil { return err }
-		if _, err := io.WriteString(part, value); err != nil { return err }
+		if _, err := io.WriteString(part, field.value); err != nil { return err }
 	}
 	return nil
 }
