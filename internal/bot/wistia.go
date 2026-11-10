@@ -8,7 +8,6 @@ import (
 
 	"github.com/aniketnotcoder/theogbot/internal/forward"
 	"github.com/aniketnotcoder/theogbot/internal/links"
-	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
 )
 
@@ -139,7 +138,3 @@ func (b *Bot) finishWistiaProgress(ctx context.Context, progress *progressReport
 	}
 	progress.update(ctx, stage, 1, done, failed, 0, true)
 }
-
-// Keep the messages.Elem type referenced here so command tests can build
-// fixtures without importing gotd's internal query conversion helpers.
-var _ messages.Elem
