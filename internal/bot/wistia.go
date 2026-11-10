@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aniketnotcoder/theogbot/internal/forward"
@@ -222,21 +223,32 @@ func (b *Bot) uploadWistiaIDs(ctx context.Context, userID int64, api *tg.Client,
 		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s upload pass complete. Uploaded: %d, failed: %d, skipped: %d, requested: %d. Waiting for Wistia assets…", label, done, failed, skipped, len(elements)))
 	}
 
-	ready := 0
+	// Poll Wistia processing with a small bounded pool after all file uploads
+	// have completed. This keeps disk usage bounded while avoiding one full
+	// processing wait per video in a large batch.
+	var waitGroup sync.WaitGroup
+	waitSlots := make(chan struct{}, 4)
 	for i := range results {
 		if ctx.Err() != nil { break }
-		waitCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		info, waitErr := b.wistia.WaitUntilReady(waitCtx, results[i].HashedID)
-		cancel()
-		if waitErr != nil {
-			results[i].Status = "uploaded; asset not ready: "+waitErr.Error()
-			continue
-		}
-		results[i].Name, results[i].Status = info.Name, info.Status
-		results[i].DeliveryURL, results[i].MP4URL = info.DeliveryURL, info.MP4URL
-		ready++
-		if progress != nil { progress.update(ctx, "Collecting direct delivery URLs", i+1, ready, failed, skipped, false) }
+		waitSlots <- struct{}{}
+		waitGroup.Add(1)
+		go func(index int) {
+			defer waitGroup.Done()
+			defer func() { <-waitSlots }()
+			waitCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+			defer cancel()
+			info, waitErr := b.wistia.WaitUntilReady(waitCtx, results[index].HashedID)
+			if waitErr != nil {
+				results[index].Status = "uploaded; asset not ready: "+waitErr.Error()
+				return
+			}
+			results[index].Name, results[index].Status = info.Name, info.Status
+			results[index].DeliveryURL, results[index].MP4URL = info.DeliveryURL, info.MP4URL
+		}(i)
 	}
+	waitGroup.Wait()
+	ready := 0
+	for _, item := range results { if item.DeliveryURL != "" && item.MP4URL != "" { ready++ } }
 	finishCtx := ctx
 	if ctx.Err() != nil { finishCtx = context.Background() }
 	if progress != nil { progress.update(finishCtx, "Finished", len(elements), done, failed, skipped, true) }
