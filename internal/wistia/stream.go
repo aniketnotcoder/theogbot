@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"mime"
-	"path/filepath"
 	"strings"
 
 	"github.com/gotd/td/telegram/downloader"
@@ -35,9 +33,6 @@ func (c *Client) UploadTelegramMessage(ctx context.Context, api *tg.Client, elem
 	filename := safeFilename(file.Name)
 	displayName := strings.TrimSpace(msg.Message)
 	if displayName == "" { displayName = filename }
-	if strings.TrimSpace(file.MIMEType) == "" {
-		if guessed := mime.TypeByExtension(filepath.Ext(filename)); guessed != "" { _ = guessed }
-	}
 	source := func(ctx context.Context, dst io.Writer) (int64, error) {
 		pw := &progressWriter{w: dst, total: doc.Size, fn: progress}
 		_, err := downloader.NewDownloader().Download(api, file.Location).Stream(ctx, pw)
