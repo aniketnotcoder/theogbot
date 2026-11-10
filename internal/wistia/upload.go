@@ -22,13 +22,17 @@ type countWriter struct{ n int64 }
 func (w *countWriter) Write(p []byte) (int, error) { w.n += int64(len(p)); return len(p), nil }
 
 func (c *Client) UploadPath(ctx context.Context, filePath, displayName string, progress ProgressFunc) (UploadResult, error) {
+	return c.uploadPathAs(ctx, filePath, filepath.Base(filePath), displayName, progress)
+}
+
+func (c *Client) uploadPathAs(ctx context.Context, filePath, filename, displayName string, progress ProgressFunc) (UploadResult, error) {
 	f, err := os.Open(filePath)
 	if err != nil { return UploadResult{}, fmt.Errorf("open upload file: %w", err) }
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil { return UploadResult{}, fmt.Errorf("stat upload file: %w", err) }
 	if !info.Mode().IsRegular() || info.Size() <= 0 { return UploadResult{}, fmt.Errorf("upload source must be a non-empty regular file") }
-	filename := safeFilename(filepath.Base(filePath))
+	filename = safeFilename(filename)
 	if displayName == "" { displayName = filename }
 	source := func(ctx context.Context, dst io.Writer) (int64, error) {
 		return copyWithProgress(ctx, dst, f, info.Size(), progress)
