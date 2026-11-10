@@ -49,7 +49,6 @@ func TestUploadSourceStreamsMultipartWithKnownLength(t *testing.T) {
 		}
 		if fields["project_id"] != "folder123" { t.Errorf("project_id = %q", fields["project_id"]) }
 		if fields["name"] != "Demo video" { t.Errorf("name = %q", fields["name"]) }
-		if !strings.EqualFold(filepath.Ext("demo.mp4"), ".mp4") { t.Fatal("unreachable") }
 		if string(gotFile) != string(payload) { t.Errorf("uploaded bytes = %q", gotFile) }
 		_ = json.NewEncoder(w).Encode(map[string]string{"hashed_id":"abc123","name":"Demo video","status":"queued"})
 	}))
