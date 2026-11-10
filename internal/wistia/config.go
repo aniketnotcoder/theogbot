@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,6 +41,9 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if cfg.FolderID == "" {
 		return Config{}, errors.New("WISTIA_PROJECT_ID is required")
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("WISTIA_DOWNLOAD_THREADS"))); err == nil && n >= 1 && n <= 32 {
+		cfg.DownloadThreads = n
 	}
 	return cfg, nil
 }
