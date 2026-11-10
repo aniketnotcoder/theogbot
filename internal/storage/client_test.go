@@ -132,3 +132,22 @@ func TestFindForumTopicIDMatchesNormalizedTitle(t *testing.T) {
 	if got:=findForumTopicID(topics,"1. Frontend");got!=10 { t.Fatalf("topic ID=%d, want 10",got) }
 	if got:=findForumTopicID(topics,"Missing");got!=0 { t.Fatalf("missing topic ID=%d, want 0",got) }
 }
+
+
+func TestRetryableUploadPartErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		message string
+		want bool
+	}{
+		{"upload part: engine forcibly closed: context canceled", true},
+		{"connection reset by peer", true},
+		{"i/o timeout", true},
+		{"rpc error code 400: MEDIA_INVALID", false},
+		{"rpc error code 400: FILE_PART_INVALID", false},
+		{"invalid destination peer", false},
+	} {
+		if got := retryableUploadPartError(fmt.Errorf("%s", tc.message)); got != tc.want {
+			t.Errorf("retryableUploadPartError(%q) = %v, want %v", tc.message, got, tc.want)
+		}
+	}
+}
