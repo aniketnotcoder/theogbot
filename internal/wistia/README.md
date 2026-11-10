@@ -10,6 +10,7 @@ Set these variables only in a dedicated test environment:
 WISTIA_API_TOKEN=<token with Upload video permission>
 WISTIA_DATA_API_TOKEN=<token with Read all folder and media data permission>
 WISTIA_PROJECT_ID=ai8812jxdq
+WISTIA_DOWNLOAD_THREADS=8
 ```
 
 The folder ID above is the hashed ID from the Wistia folder URL. The Upload API still names this parameter `project_id`.
