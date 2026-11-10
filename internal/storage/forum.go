@@ -13,12 +13,12 @@ func(c *Client)UploadAlbumToForumTopicWithProgress(ctx context.Context,dest tg.I
  if len(items)<2||len(items)>10{return nil,fmt.Errorf("album must contain between 2 and 10 items")}
  if e:=c.Ready(ctx);e!=nil{return nil,e}
  c.mu.RLock();api:=c.api;c.mu.RUnlock()
- var total int64
  randomIDs:=make([]int64,len(items))
  for i,item:=range items{
   if item.Kind!="photo"&&item.Kind!="video"{return nil,fmt.Errorf("album item %d has unsupported kind %q",i+1,item.Kind)}
-  info,e:=os.Stat(item.Path);if e!=nil{return nil,fmt.Errorf("stat album item %d: %w",i+1,e)}
-  total+=info.Size();randomIDs[i],e=crypto.RandInt64(crypto.DefaultRand());if e!=nil{return nil,e}
+  if _,e:=os.Stat(item.Path);e!=nil{return nil,fmt.Errorf("stat album item %d: %w",i+1,e)}
+  var e error
+  randomIDs[i],e=crypto.RandInt64(crypto.DefaultRand());if e!=nil{return nil,e}
  }
  return retryFloodWait(ctx,func()(tg.UpdatesClass,error){
   mediaItems:=make([]tg.InputSingleMedia,0,len(items))
