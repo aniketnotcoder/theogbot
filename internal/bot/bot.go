@@ -27,6 +27,7 @@ import (
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/aniketnotcoder/theogbot/internal/storage"
 	"github.com/aniketnotcoder/theogbot/internal/storageprefs"
+	"github.com/aniketnotcoder/theogbot/internal/wistia"
 	"github.com/gotd/td/tg"
 )
 
@@ -40,6 +41,7 @@ type Bot struct {
 	offset int64
 	accounts *account.Manager
 	storage *storage.Client
+	wistia *wistia.Client
 	tempDir string
 	jobsMu sync.Mutex
 	jobs map[int64]context.CancelFunc
@@ -83,6 +85,7 @@ type incomingMessage struct {
 	Video *struct { FileID string `json:"file_id"` } `json:"video"`
 }
 type destination struct { ChatID int64; Title string; Username string }
+type retryTask struct { elements []messages.Elem; ids []int; album bool; firstIndex int }
 type otpInput struct { ChatID int64; MessageID int64; Code string; Photo bool }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"`; Photo []json.RawMessage `json:"photo"` }
@@ -234,6 +237,7 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 }
 
 func (b *Bot) SetStorage(client *storage.Client) { b.storage = client }
+func (b *Bot) SetWistia(client *wistia.Client) { b.wistia = client }
 func (b *Bot) SetTempDir(path string) { b.tempDir = path }
 func (b *Bot) SetStoragePrefs(store *storageprefs.Store) error {
 	if store == nil { return fmt.Errorf("storage preferences database is nil") }
@@ -295,7 +299,34 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);password:=strings.TrimSpace(strings.TrimPrefix(text,fields[0]))
 		if password==""{reply="Usage: /password YOUR_2FA_PASSWORD"}else if err:=b.accounts.SubmitPassword(msg.From.ID,password);err!=nil{reply="Could not submit password: "+err.Error()}else{reply="2-step verification password submitted."}
 	case "/batch":
-		if len(fields)<2{reply="Usage: /batch https://t.me/channel/123 [https://t.me/channel/124]"}else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,fields[1:])}();return}
+		batchLinks, parseErr := parseBatchCommand(fields)
+		if parseErr != nil {
+			reply = parseErr.Error()
+		} else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok {
+			reply="A transfer is already running. Send /cancel first."
+		} else {
+			go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,batchLinks)}()
+			return
+		}
+	case "/wistia":
+		if msg.Chat.Type != "private" {
+			reply = "For privacy, use /wistia in a private chat with this bot."
+		} else if b.wistia == nil {
+			reply = "Wistia upload is not configured. Set WISTIA_API_TOKEN and WISTIA_PROJECT_ID in Railway, then redeploy."
+		} else if len(fields) < 2 || len(fields) > 3 {
+			reply = "Usage: /wistia https://t.me/channel/123 [stream|parallel]"
+		} else {
+			mode := "stream"
+			if len(fields) == 3 { mode = strings.ToLower(fields[2]) }
+			if mode != "stream" && mode != "parallel" {
+				reply = "Mode must be stream (zero disk) or parallel (temporary disk, parallel Telegram download)."
+			} else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok {
+				reply = "A transfer is already running. Send /cancel first."
+			} else {
+				go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[1],mode)}()
+				return
+			}
+		}
 	case "/copy":
 		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=100;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(jobCtx,msg.From.ID,msg.Chat.ID,fields[1],limit)}();return}}}
 	case "/cancel":
@@ -366,12 +397,19 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []string) {
 	ctx:=parent
 	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your account first using the menu.");return}
-	var source tg.InputPeerClass;ids:=make([]int,0,len(rawLinks))
+	var source tg.InputPeerClass
+	ids:=make([]int,0,len(rawLinks))
+	resolved:=make(map[string]tg.InputPeerClass)
 	for _,raw:=range rawLinks{
 		parsed,err:=links.Parse(raw);if err!=nil{_=b.sendMessage(ctx,chatID,"Invalid Telegram post link: "+raw);return}
-		var peer tg.InputPeerClass
-		if parsed.Username!=""{peer,err=forward.ResolveUsername(ctx,api,parsed.Username)}else{peer,err=forward.ResolvePrivateChannelID(ctx,api,parsed.ChannelID)}
-		if err!=nil{_=b.sendMessage(ctx,chatID,"Cannot access source chat: "+err.Error());return}
+		key:=fmt.Sprintf("channel:%d",parsed.ChannelID)
+		if parsed.Username!=""{key="username:"+strings.ToLower(parsed.Username)}
+		peer:=resolved[key]
+		if peer==nil {
+			if parsed.Username!=""{peer,err=forward.ResolveUsername(ctx,api,parsed.Username)}else{peer,err=forward.ResolvePrivateChannelID(ctx,api,parsed.ChannelID)}
+			if err!=nil{_=b.sendMessage(ctx,chatID,"Cannot access source chat: "+err.Error());return}
+			resolved[key]=peer
+		}
 		if source!=nil&&peerKey(source)!=peerKey(peer){_=b.sendMessage(ctx,chatID,"All /batch links must belong to the same source chat.");return}
 		source=peer;ids=append(ids,parsed.MessageID)
 	}
@@ -438,6 +476,7 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 	if err != nil { if progress != nil { progress.update(ctx,"Failed to retrieve source messages",1,0,1,0,true) }; _ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s could not retrieve the exact requested posts: %v", label, err)); return }
 
 	done, failed, skipped := 0, 0, 0
+	retryTasks := make([]retryTask, 0)
 	if progress != nil { progress.update(ctx,"Ready",1,done,failed,skipped,true) }
 	for i := 0; i < len(ids); {
 		if err := ctx.Err(); err != nil {
@@ -473,11 +512,13 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 				var uploadErr error
 				albumProgress:=func(current,total int64){if progress!=nil{progress.updateBytes(ctx,"Uploading album",current,total,i+1,done,failed,skipped)}}
 				if destinationTopicID>0 { updates,uploadErr=b.storage.UploadAlbumToForumTopicWithProgress(ctx,destinationPeer,destinationTopicID,items,albumProgress) } else { updates,uploadErr=b.storage.UploadAlbumToWithProgress(ctx,destinationPeer,items,albumProgress) }
-				for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
 				if uploadErr != nil {
 					failed += groupLen
-					_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s album [%d-%d/%d] upload failed: %v", label, i+1, i+groupLen, len(ids), uploadErr))
+					for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
+					retryTasks = append(retryTasks, retryTask{elements: append([]messages.Elem(nil), elements[i:i+groupLen]...), ids: append([]int(nil), ids[i:i+groupLen]...), album: true, firstIndex: i+1})
+					_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s album [%d-%d/%d] upload failed; queued for one retry at the end: %v", label, i+1, i+groupLen, len(ids), uploadErr))
 				} else {
+					for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
 					done += groupLen
 					resultRefs = append(resultRefs, destinationMessageRefs(d, updates)...)
 				}
@@ -515,20 +556,37 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 		var updates tg.UpdatesClass
 		var uploadErr error
 		if destinationTopicID>0 { updates,uploadErr=b.storage.UploadPathToForumTopicWithProgress(ctx,destinationPeer,destinationTopicID,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes,downloaded.Entities,uploadProgress) } else { updates,uploadErr=b.storage.UploadPathToWithProgress(ctx,destinationPeer,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes,downloaded.Entities,uploadProgress) }
-		cleanupErr := downloaded.Cleanup()
 		if uploadErr != nil {
 			failed++
-			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] upload failed for message %d: %v", label, i+1, len(ids), id, uploadErr))
+			if cleanupErr := downloaded.Cleanup(); cleanupErr != nil { b.log.Warn("temporary file cleanup failed after failed upload", "path", downloaded.Path, "error", cleanupErr) }
+			retryTasks = append(retryTasks, retryTask{elements: []messages.Elem{elem}, ids: []int{id}, firstIndex: i+1})
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] upload failed for message %d; queued for one retry at the end: %v", label, i+1, len(ids), id, uploadErr))
 		} else {
-			if cleanupErr != nil { b.log.Warn("temporary file cleanup failed", "path", downloaded.Path, "error", cleanupErr) }
+			if cleanupErr := downloaded.Cleanup(); cleanupErr != nil { b.log.Warn("temporary file cleanup failed", "path", downloaded.Path, "error", cleanupErr) }
 			done++
 			resultRefs = append(resultRefs, destinationMessageRefs(d, updates)...)
 		}
 		i++
 	}
-	if progress != nil { progress.update(ctx,"Finished",len(ids),done,failed,skipped,true) }
-	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s finished. Uploaded: %d, failed: %d, skipped: %d, requested: %d.", label, done, failed, skipped, len(ids)))
-	b.sendTransferResults(ctx,chatID,d,label,done,resultRefs)
+	if len(retryTasks) > 0 {
+		if ctx.Err() == nil {
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("First pass complete. Retrying %d failed upload group(s) once at the end; only failed source items will be downloaded again.", len(retryTasks)))
+			retried, retryRefs := b.retryFailedUploads(ctx, api, destinationPeer, d, label, destinationTopicID, retryTasks, progress, chatID, done, failed, skipped)
+			done += retried
+			failed -= retried
+			resultRefs = append(resultRefs, retryRefs...)
+		} else {
+		}
+	}
+	finishCtx := ctx
+	if ctx.Err() != nil {
+		var finishCancel context.CancelFunc
+		finishCtx, finishCancel = context.WithTimeout(context.Background(), 15*time.Second)
+		defer finishCancel()
+	}
+	if progress != nil { progress.update(finishCtx,"Finished",len(ids),done,failed,skipped,true) }
+	_ = b.sendMessage(finishCtx, chatID, fmt.Sprintf("%s finished. Uploaded: %d, failed: %d, skipped: %d, requested: %d.", label, done, failed, skipped, len(ids)))
+	b.sendTransferResults(finishCtx,chatID,d,label,done,resultRefs)
 }
 
 func (b *Bot) sendTransferResults(ctx context.Context, chatID int64, dest destination, label string, done int, refs []string) {
@@ -928,13 +986,15 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 			"1. Connect account: sign in to the account that can read the source channel/group.\n" +
 			"2. Create storage: TheOGBot creates a private group and adds its uploader bot.\n" +
 			"3. Join storage: open the invite link from the account you want to use to view your files. This is important when it is different from your connected source account.\n" +
-			"4. Batch transfer: paste one or more post links from the same chat.\n" +
-			"5. Copy history: paste a chat link to copy its accessible history.\n\n" +
+			"4. Batch transfer: paste post links, or use /batch <chat-link> 61 to 309 for an inclusive ID range.\n" +
+			"5. Copy history: paste a chat link to copy its accessible history.\n" +
+			"6. Wistia: use /wistia <post-link> [stream|parallel] to upload a video.\n\n" +
 			"Use Cancel transfer whenever you need to stop a running job."
 	}
 	markup := map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text":"Connect account","callback_data":"login:start"},{"text":"Create storage","callback_data":"storage:create"}},
 		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
+		{{"text":"Wistia video upload","callback_data":"transfer:wistia"}},
 		{{"text":"My account","callback_data":"account:status"},{"text":"Help / tutorial","callback_data":"help"}},
 	}}
 	if tutorial {
@@ -1013,8 +1073,17 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 			if b.accounts==nil{_ = b.sendMessage(ctx,msg.Chat.ID,"MTProto login is unavailable.");return true}
 			if err:=b.accounts.Begin(ctx,msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not start login: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"Login started. Waiting for the verification prompt…")}
 		case "batch":
-			links:=strings.Fields(value);if len(links)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send one or more Telegram post links.");return true}
-			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,links)}()}
+			batchLinks, parseErr := parseBatchCommand(append([]string{"/batch"}, strings.Fields(value)...))
+			if parseErr != nil { _ = b.sendMessage(ctx,msg.Chat.ID,parseErr.Error()); return true }
+			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,batchLinks)}()}
+		case "wistia":
+			fields := strings.Fields(value)
+			if len(fields) < 1 || len(fields) > 2 { _ = b.sendMessage(ctx,msg.Chat.ID,"Send one Telegram video post link, optionally followed by stream or parallel."); return true }
+			mode := "stream"
+			if len(fields) == 2 { mode = strings.ToLower(fields[1]) }
+			if mode != "stream" && mode != "parallel" { _ = b.sendMessage(ctx,msg.Chat.ID,"Mode must be stream or parallel."); return true }
+			if b.wistia == nil { _ = b.sendMessage(ctx,msg.Chat.ID,"Wistia is not configured on this deployment."); return true }
+			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok { _ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.") } else { go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],mode)}() }
 		case "copy":
 			fields:=strings.Fields(value);if len(fields)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send a Telegram chat link, optionally followed by a limit.");return true}
 			limit:=100;if len(fields)>1{n,err:=strconv.Atoi(fields[1]);if err!=nil||n<1||n>50000{_ = b.sendMessage(ctx,msg.Chat.ID,"Limit must be between 1 and 50000.");return true};limit=n}
@@ -1080,10 +1149,14 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 		_ = b.sendMessage(ctx,chatID,"Forward any message from your existing destination group or channel here. The configured uploader bot must already have posting permission.")
 	case "transfer:batch":
 		b.setPendingInput(userID,"batch")
-		b.sendForceReply(ctx,chatID,"Send one or more Telegram post links, separated by spaces or new lines.","Telegram post links")
+		b.sendForceReply(ctx,chatID,"Send post links, or a range like: https://t.me/channel 61 to 309","Post links or ID range")
 	case "transfer:copy":
 		b.setPendingInput(userID,"copy")
 		b.sendForceReply(ctx,chatID,"Send a Telegram chat link and optionally a message limit (default 100).","Chat link [limit]")
+	case "transfer:wistia":
+		if b.wistia == nil { _ = b.sendMessage(ctx,chatID,"Wistia is not configured on this deployment."); return }
+		b.setPendingInput(userID,"wistia")
+		b.sendForceReply(ctx,chatID,"Send a Telegram video post link. Use /wistia <post-link> [stream|parallel] for explicit mode.","Telegram video post link")
 	case "job:cancel":
 		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
 	case "account:logout":

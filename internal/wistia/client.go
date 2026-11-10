@@ -71,6 +71,9 @@ func NewClient(cfg Config) (*Client, error) {
 	}, nil
 }
 
+// HasDataAPI reports whether media status lookups are available.
+func (c *Client) HasDataAPI() bool { return c != nil && strings.TrimSpace(c.dataToken) != "" }
+
 func (c *Client) doDataGET(ctx context.Context, endpoint string) ([]byte, error) {
 	if c == nil || c.dataToken == "" {
 		return nil, ErrDataTokenRequired

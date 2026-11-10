@@ -12,6 +12,7 @@ import (
 	"github.com/aniketnotcoder/theogbot/internal/config"
 	"github.com/aniketnotcoder/theogbot/internal/storage"
 	"github.com/aniketnotcoder/theogbot/internal/storageprefs"
+	"github.com/aniketnotcoder/theogbot/internal/wistia"
 )
 
 func main() {
@@ -23,6 +24,19 @@ func main() {
 
 	accounts := account.NewManager(cfg.APIID, cfg.APIHash)
 	app := bot.New(cfg.BotToken, logger, accounts)
+	// Wistia is an optional side feature. Missing Wistia variables never prevent
+	// the existing Telegram-to-Telegram bot from starting.
+	if os.Getenv("WISTIA_API_TOKEN") != "" || os.Getenv("WISTIA_PROJECT_ID") != "" {
+		wistiaCfg, cfgErr := wistia.ConfigFromEnv()
+		if cfgErr != nil {
+			logger.Warn("Wistia integration disabled because its configuration is incomplete", "error", cfgErr)
+		} else if wistiaClient, clientErr := wistia.NewClient(wistiaCfg); clientErr != nil {
+			logger.Warn("Wistia integration disabled", "error", clientErr)
+		} else {
+			app.SetWistia(wistiaClient)
+			logger.Info("Wistia direct-upload integration enabled")
+		}
+	}
 	app.SetTempDir(cfg.TempDir)
 	prefs, err := storageprefs.Open(cfg.StorageDBPath)
 	if err != nil { logger.Error("storage preferences database error", "error", err); os.Exit(1) }
