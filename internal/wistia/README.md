@@ -26,7 +26,7 @@ gotd documents that `Stream` is sequential and cannot use the parallel `Parallel
 
 ### Reliable file upload
 
-`Client.UploadPath` streams an existing regular file into Wistia multipart upload. It does not read the entire file into memory. This is the fallback engine for later orchestration and controlled re-uploads.
+`Client.UploadTelegramMessageFromFile` uses gotd's parallel `Parallel()` downloader with a bounded worker count, writes to a private temporary file, then streams that file to Wistia. It deletes the file only after a confirmed successful upload. If upload fails, it returns the retained temporary path for reconciliation or retry. `Client.UploadFile` can retry a retained file while preserving its original filename. `Client.UploadPath` is the convenience wrapper when the on-disk filename should be used.
 
 Both engines share the same multipart request implementation, known content length, cancellation propagation, and result parsing.
 
