@@ -1,6 +1,6 @@
 package storage
 
-import ("testing"; "context"; "github.com/gotd/td/tg"
+import ("testing"; "context"; "fmt"; "github.com/gotd/td/tg"
 	"github.com/gotd/td/telegram/uploader")
 
 func TestNewAllowsPerUserDestinationConfiguration(t *testing.T) {
