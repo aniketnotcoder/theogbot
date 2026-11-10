@@ -958,13 +958,15 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 			"1. Connect account: sign in to the account that can read the source channel/group.\n" +
 			"2. Create storage: TheOGBot creates a private group and adds its uploader bot.\n" +
 			"3. Join storage: open the invite link from the account you want to use to view your files. This is important when it is different from your connected source account.\n" +
-			"4. Batch transfer: paste one or more post links from the same chat.\n" +
-			"5. Copy history: paste a chat link to copy its accessible history.\n\n" +
+			"4. Batch transfer: paste post links, or use /batch <chat-link> 61 to 309 for an inclusive ID range.\n" +
+			"5. Copy history: paste a chat link to copy its accessible history.\n" +
+			"6. Wistia: use /wistia <post-link> [stream|parallel] to upload a video.\n\n" +
 			"Use Cancel transfer whenever you need to stop a running job."
 	}
 	markup := map[string]any{"inline_keyboard": [][]map[string]string{
 		{{"text":"Connect account","callback_data":"login:start"},{"text":"Create storage","callback_data":"storage:create"}},
 		{{"text":"Batch transfer","callback_data":"transfer:batch"},{"text":"Copy history","callback_data":"transfer:copy"}},
+		{{"text":"Wistia video upload","callback_data":"transfer:wistia"}},
 		{{"text":"My account","callback_data":"account:status"},{"text":"Help / tutorial","callback_data":"help"}},
 	}}
 	if tutorial {
@@ -1043,8 +1045,9 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 			if b.accounts==nil{_ = b.sendMessage(ctx,msg.Chat.ID,"MTProto login is unavailable.");return true}
 			if err:=b.accounts.Begin(ctx,msg.From.ID,value);err!=nil{_ = b.sendMessage(ctx,msg.Chat.ID,"Could not start login: "+err.Error())}else{_ = b.sendMessage(ctx,msg.Chat.ID,"Login started. Waiting for the verification prompt…")}
 		case "batch":
-			links:=strings.Fields(value);if len(links)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send one or more Telegram post links.");return true}
-			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,links)}()}
+			batchLinks, parseErr := parseBatchCommand(append([]string{"/batch"}, strings.Fields(value)...))
+			if parseErr != nil { _ = b.sendMessage(ctx,msg.Chat.ID,parseErr.Error()); return true }
+			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,batchLinks)}()}
 		case "copy":
 			fields:=strings.Fields(value);if len(fields)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send a Telegram chat link, optionally followed by a limit.");return true}
 			limit:=100;if len(fields)>1{n,err:=strconv.Atoi(fields[1]);if err!=nil||n<1||n>50000{_ = b.sendMessage(ctx,msg.Chat.ID,"Limit must be between 1 and 50000.");return true};limit=n}
@@ -1110,7 +1113,7 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 		_ = b.sendMessage(ctx,chatID,"Forward any message from your existing destination group or channel here. The configured uploader bot must already have posting permission.")
 	case "transfer:batch":
 		b.setPendingInput(userID,"batch")
-		b.sendForceReply(ctx,chatID,"Send one or more Telegram post links, separated by spaces or new lines.","Telegram post links")
+		b.sendForceReply(ctx,chatID,"Send post links, or a range like: https://t.me/channel 61 to 309","Post links or ID range")
 	case "transfer:copy":
 		b.setPendingInput(userID,"copy")
 		b.sendForceReply(ctx,chatID,"Send a Telegram chat link and optionally a message limit (default 100).","Chat link [limit]")
