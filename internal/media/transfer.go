@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"io"
 	"sync/atomic"
 	"syscall"
@@ -34,6 +35,7 @@ func (w *progressWriterAt) WriteAt(p []byte, off int64) (int, error) {
 }
 
 const minFreeDiskBytes int64 = 128 << 20
+func downloadWorkerCount() int { n,e:=strconv.Atoi(strings.TrimSpace(os.Getenv("THEOGBOT_DOWNLOAD_THREADS")));if e!=nil||n<1||n>32{return 8};return n }
 
 func tempFilePattern(kind string) string {
 	if kind == "photo" {
@@ -106,7 +108,7 @@ func DownloadMessageWithProgress(ctx context.Context, api *tg.Client, elem messa
 	defer func(){ if !closed { if closeErr := f.Close(); err == nil && closeErr != nil { err = closeErr } }; if err != nil { _ = os.Remove(path) } }()
 
 	writer := &progressWriterAt{file:f,total:expectedSize,callback:progress}
-	_, err = downloader.NewDownloader().Download(api, file.Location).WithThreads(8).Parallel(ctx, writer)
+	_, err = downloader.NewDownloader().Download(api, file.Location).WithThreads(downloadWorkerCount()).Parallel(ctx, writer)
 	if err != nil { return nil, fmt.Errorf("download %q: %w", file.Name, err) }
 	if err = f.Sync(); err != nil { return nil, fmt.Errorf("sync downloaded file: %w", err) }
 	if err = f.Close(); err != nil { return nil, fmt.Errorf("close downloaded file: %w", err) }; closed = true
