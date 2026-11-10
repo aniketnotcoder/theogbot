@@ -61,7 +61,7 @@ func TestUploadSourceStreamsMultipartWithKnownLength(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 	if result.HashedID != "abc123" || result.FolderID != "folder123" { t.Fatalf("unexpected result: %+v", result) }
-	if result.PlayerURL != "https://fast.wistia.net/embed/iframe/abc123" { t.Fatalf("unexpected player URL: %s", result.PlayerURL) }
+	if result.PlayerURL != "" || result.EmbedURL != "" { t.Fatalf("upload response must not manufacture player/embed URLs: %+v", result) }
 }
 
 func TestUploadPath(t *testing.T) {
