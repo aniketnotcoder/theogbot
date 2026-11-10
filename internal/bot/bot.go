@@ -319,6 +319,16 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 			reply = "Direct .bin/.mp4 delivery URLs require WISTIA_DATA_API_TOKEN with Read all folder and media data permission."
 		} else if len(fields) < 2 {
 			reply = "Usage: /wistia <post-link> [post-link ...], /wistia batch <chat-link> <start> to <end>, or /wistia copy <chat-link> [limit]."
+		} else if strings.EqualFold(fields[1], "resume") {
+			rawLink, startID, endID, parseErr := parseWistiaResumeCommand(fields)
+			if parseErr != nil {
+				reply = parseErr.Error()
+			} else if jobCtx, ok := b.startJob(msg.From.ID, ctx); !ok {
+				reply = "A transfer is already running. Send /cancel first."
+			} else {
+				go func() { defer b.finishJob(msg.From.ID); b.runWistiaResume(jobCtx, msg.From.ID, msg.Chat.ID, rawLink, startID, endID) }()
+				return
+			}
 		} else if strings.EqualFold(fields[1], "copy") {
 			if len(fields) < 3 || len(fields) > 4 {
 				reply = "Usage: /wistia copy <chat-link> [limit] (default 100, maximum 50000)."
