@@ -82,7 +82,7 @@ For a safe live test, use a private test destination, add the configured uploade
 - `/batch <chat-link> <start> to <end>` — copy an inclusive message-ID range from one chat (for example, `/batch https://t.me/c/4332971248 61 to 309`).
 - `/batch <chat-link> <start>-<end>` — equivalent compact range syntax.
 - `/batch <post-link> [<post-link> ...]` — existing explicit-post batch syntax.
-- Failed media uploads are retained locally during the batch and retried once after the first pass, without downloading the same Telegram media again. Failed retry files are cleaned up; user cancellation skips retries and cleans queued files.
+- Failed media uploads are queued by message reference and retried once after the first pass. Only failed source items are downloaded again, one at a time, so failed files do not accumulate on Railway temporary disk; user cancellation skips retries.
 - `/wistia <post-link> [stream|parallel]` — upload one accessible Telegram video post to the configured Wistia folder. `stream` (default) pipes Telegram download directly into Wistia without a media temp file; `parallel` uses gotd's parallel download into a temporary file before uploading.
 - The Wistia upload command is also available from the private-chat menu. It requires a connected MTProto account and Wistia environment variables.
 
