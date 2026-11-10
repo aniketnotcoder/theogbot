@@ -83,8 +83,11 @@ For a safe live test, use a private test destination, add the configured uploade
 - `/batch <chat-link> <start>-<end>` — equivalent compact range syntax.
 - `/batch <post-link> [<post-link> ...]` — existing explicit-post batch syntax.
 - Failed media uploads are queued by message reference and retried once after the first pass. Only failed source items are downloaded again, one at a time, so failed files do not accumulate on Railway temporary disk; user cancellation skips retries.
-- `/wistia <post-link> [stream|parallel]` — upload one accessible Telegram video post to the configured Wistia folder. `stream` (default) pipes Telegram download directly into Wistia without a media temp file; `parallel` uses gotd's parallel download into a temporary file before uploading.
-- The Wistia upload command is also available from the private-chat menu. It requires a connected MTProto account and Wistia environment variables.
-
-Wistia variables are optional and do not prevent normal Telegram-to-Telegram transfers from starting:
-`WISTIA_API_TOKEN` (Upload media permission), `WISTIA_DATA_API_TOKEN` (read folder/media permission for readiness polling), and `WISTIA_PROJECT_ID` (destination folder ID). If the Data API token is omitted, the bot reports the Wistia upload result without polling processing status.
+- `/wistia <post-link> [parallel|stream]` — upload one accessible Telegram video. Parallel is the default and uses gotd's parallel download workers before uploading. `stream` remains available only as an explicit zero-disk option.
+- `/wistia <post-link> [<post-link> ...]` — upload multiple explicitly selected posts in the supplied order.
+- `/wistia batch <chat-link> <start> to <end>` or `/wistia batch <chat-link> <start>-<end>` — upload an inclusive message-ID range, matching `/batch` semantics.
+- `/wistia copy <chat-link> [limit]` — scan accessible chat history (default 100, maximum 50000) and upload every accessible video post. Non-video and protected posts are counted as skipped. Forum sources are scanned topic-by-topic; each Wistia media name is prefixed with its Telegram topic title.
+- Wistia bulk uploads are sequential per user to keep temporary disk usage bounded. Each video uses parallel Telegram download workers. The source Telegram-to-Telegram `/batch` and `/copy` commands are unchanged.
+- Each successful upload waits for Wistia processing and returns the actual direct asset URL from the Wistia Data API: an `.bin` delivery URL and a named `.mp4` URL. The bot does not return `fast.wistia.net` player/embed URLs.
+- Direct asset URLs bypass Wistia's player analytics and customizations and count toward account bandwidth; use them only when raw file playback is intended. See [Wistia Asset URLs](https://docs.wistia.com/docs/asset-urls).
+- Wistia requires a connected MTProto account, `WISTIA_API_TOKEN` (Upload media permission), `WISTIA_DATA_API_TOKEN` (Read all folder and media data permission, required to fetch delivery assets), and `WISTIA_PROJECT_ID` (destination folder ID). Missing Wistia variables do not affect normal Telegram-to-Telegram transfers.

@@ -111,8 +111,8 @@ func (c *Client) UploadSource(ctx context.Context, filename, displayName string,
 		return UploadResult{}, err
 	}
 	result.FolderID = c.folderID
-	result.PlayerURL = "https://fast.wistia.net/embed/iframe/" + result.HashedID
-	result.EmbedURL = result.PlayerURL
+	// Direct asset URLs are populated only after the Data API reports ready assets.
+	// Do not manufacture fast.wistia.net player URLs from a media hashed ID.
 	return result, nil
 }
 

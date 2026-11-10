@@ -61,7 +61,7 @@ func TestUploadSourceStreamsMultipartWithKnownLength(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 	if result.HashedID != "abc123" || result.FolderID != "folder123" { t.Fatalf("unexpected result: %+v", result) }
-	if result.PlayerURL != "https://fast.wistia.net/embed/iframe/abc123" { t.Fatalf("unexpected player URL: %s", result.PlayerURL) }
+	if result.PlayerURL != "" || result.EmbedURL != "" { t.Fatalf("upload response must not manufacture player/embed URLs: %+v", result) }
 }
 
 func TestUploadPath(t *testing.T) {
@@ -124,7 +124,7 @@ func TestGetMediaReadsModernAttributes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer read-test-token" { t.Errorf("unexpected data token") }
 		if r.Header.Get("X-Wistia-API-Version") != defaultAPIVersion { t.Errorf("unexpected API version") }
-		_, _ = io.WriteString(w, `{"data":{"id":"abc123","attributes":{"name":"Demo","status":"ready"}}}`)
+		_, _ = io.WriteString(w, `{"data":{"id":"abc123","attributes":{"name":"Demo","status":"ready","assets":[{"type":"OriginalFile","url":"https://embed-ssl.wistia.com/deliveries/original.bin","contentType":"video/mp4"},{"type":"HdMp4VideoFile","url":"https://embed-ssl.wistia.com/deliveries/89a55ffaebc2e8af0f996042f24191c99e8afcc1.bin","contentType":"video/mp4"}]}}}`)
 	}))
 	defer server.Close()
 	client, err := NewClient(Config{UploadToken:"upload",DataAPIToken:"read-test-token",FolderID:"folder",APIEndpoint:server.URL,HTTPClient:server.Client()})
@@ -132,4 +132,25 @@ func TestGetMediaReadsModernAttributes(t *testing.T) {
 	info, err := client.GetMedia(context.Background(), "abc123")
 	if err != nil { t.Fatal(err) }
 	if info.Status != "ready" || info.Name != "Demo" { t.Fatalf("unexpected media info: %+v", info) }
+	if info.DeliveryURL != "https://embed-ssl.wistia.com/deliveries/89a55ffaebc2e8af0f996042f24191c99e8afcc1.bin" { t.Fatalf("delivery URL = %q", info.DeliveryURL) }
+	if info.MP4URL != "https://embed-ssl.wistia.com/deliveries/89a55ffaebc2e8af0f996042f24191c99e8afcc1/Demo.mp4" { t.Fatalf("MP4 URL = %q", info.MP4URL) }
+	if info.AssetType != "HdMp4VideoFile" { t.Fatalf("asset type = %q", info.AssetType) }
+}
+
+
+func TestMP4AssetURLPreservesQueryAndUsesWistiaPathConvention(t *testing.T) {
+	got := mp4AssetURL("https://embed-ssl.wistia.com/deliveries/hash.bin?foo=bar", "Lesson 01.mov")
+	want := "https://embed-ssl.wistia.com/deliveries/hash/Lesson%2001.mp4?foo=bar"
+	if got != want { t.Fatalf("mp4 URL = %q, want %q", got, want) }
+}
+
+func TestFindMP4AssetURLFallsBackToOriginalOnlyWhenNoEncodedMP4Exists(t *testing.T) {
+	raw := map[string]any{"data":map[string]any{"attributes":map[string]any{"assets":[]any{
+		map[string]any{"type":"OriginalFile","url":"https://embed-ssl.wistia.com/deliveries/original.bin","contentType":"video/mp4"},
+		map[string]any{"type":"StillImageFile","url":"https://embed-ssl.wistia.com/deliveries/still.jpg","contentType":"image/jpeg"},
+	}}}}
+	url, kind := findMP4AssetURL(raw)
+	if url != "https://embed-ssl.wistia.com/deliveries/original.bin" || kind != "OriginalFile" {
+		t.Fatalf("fallback asset = %q (%q)", url, kind)
+	}
 }

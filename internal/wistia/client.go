@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -129,10 +130,75 @@ func (c *Client) GetMedia(ctx context.Context, hashedID string) (MediaInfo, erro
 			if info.Status == "" { info.Status = readString(attrs, "status") }
 		}
 	}
+	if assetURL, assetType := findMP4AssetURL(raw); assetURL != "" {
+		info.DeliveryURL = normalizeDeliveryURL(assetURL)
+		info.MP4URL = mp4AssetURL(info.DeliveryURL, info.Name)
+		info.AssetType = assetType
+	}
 	if info.Status == "" {
 		return info, fmt.Errorf("Wistia media response did not include a status")
 	}
 	return info, nil
+}
+
+func findMP4AssetURL(value any) (string, string) {
+	bestURL, bestType, bestRank := "", "", 0
+	var walk func(any)
+	walk = func(node any) {
+		switch item := node.(type) {
+		case map[string]any:
+			if rawAssets, ok := item["assets"].([]any); ok {
+				for _, rawAsset := range rawAssets {
+					asset, ok := rawAsset.(map[string]any)
+					if !ok { continue }
+					assetURL, _ := asset["url"].(string)
+					assetType, _ := asset["type"].(string)
+					contentType, _ := asset["contentType"].(string)
+					if assetURL == "" || strings.Contains(strings.ToLower(assetType), "image") { continue }
+					if contentType != "" && !strings.HasPrefix(strings.ToLower(contentType), "video/") { continue }
+					if contentType == "" && !strings.HasSuffix(strings.ToLower(assetURL), ".bin") && !strings.HasSuffix(strings.ToLower(assetURL), ".mp4") { continue }
+					rank := 1
+					switch assetType {
+					case "HdMp4VideoFile": rank = 5
+					case "Mp4VideoFile": rank = 4
+					case "MdMp4VideoFile": rank = 3
+					case "IPhoneVideoFile": rank = 2
+					case "OriginalFile": rank = 1
+					}
+					if rank > bestRank { bestURL, bestType, bestRank = assetURL, assetType, rank }
+				}
+			}
+			for _, child := range item { walk(child) }
+		case []any:
+			for _, child := range item { walk(child) }
+		}
+	}
+	walk(value)
+	return bestURL, bestType
+}
+
+func normalizeDeliveryURL(assetURL string) string {
+	u, err := url.Parse(assetURL)
+	if err != nil { return "" }
+	u.Scheme = "https"
+	if strings.EqualFold(u.Host, "embed.wistia.com") { u.Host = "embed-ssl.wistia.com" }
+	return u.String()
+}
+
+// mp4AssetURL applies Wistia's documented extension convention to an asset URL.
+// The .bin and named .mp4 URLs address the same underlying asset.
+func mp4AssetURL(assetURL, name string) string {
+	u, err := url.Parse(assetURL)
+	if err != nil { return "" }
+	if strings.HasSuffix(strings.ToLower(u.Path), ".mp4") { return u.String() }
+	if !strings.HasSuffix(strings.ToLower(u.Path), ".bin") { return "" }
+	filename := safeFilename(name)
+	ext := strings.ToLower(path.Ext(filename))
+	if ext != ".mp4" { filename = strings.TrimSuffix(filename, path.Ext(filename)) + ".mp4" }
+	u.Path = strings.TrimSuffix(u.Path, path.Ext(u.Path)) + "/" + filename
+	if strings.EqualFold(u.Host, "embed.wistia.com") { u.Host = "embed-ssl.wistia.com" }
+	u.Scheme = "https"
+	return u.String()
 }
 
 func (c *Client) WaitUntilReady(ctx context.Context, hashedID string) (MediaInfo, error) {
@@ -145,7 +211,7 @@ func (c *Client) WaitUntilReady(ctx context.Context, hashedID string) (MediaInfo
 		}
 		switch strings.ToLower(info.Status) {
 		case "ready":
-			return info, nil
+			if info.DeliveryURL != "" && info.MP4URL != "" { return info, nil }
 		case "failed", "error":
 			return info, fmt.Errorf("%w: %s", ErrMediaProcessingFailed, info.Status)
 		}
