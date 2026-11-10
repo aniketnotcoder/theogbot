@@ -10,6 +10,7 @@ import (
 
 	"github.com/aniketnotcoder/theogbot/internal/forward"
 	"github.com/aniketnotcoder/theogbot/internal/links"
+	"github.com/aniketnotcoder/theogbot/internal/wistia"
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/gotd/td/tg"
 )
