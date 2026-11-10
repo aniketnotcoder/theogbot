@@ -161,7 +161,7 @@ func findMP4AssetURL(value any) (string, string) {
 					case "Mp4VideoFile": rank = 4
 					case "MdMp4VideoFile": rank = 3
 					case "IPhoneVideoFile": rank = 2
-					case "OriginalFile": rank = 0
+					case "OriginalFile": rank = 1
 					}
 					if rank > bestRank { bestURL, bestType, bestRank = assetURL, assetType, rank }
 				}
