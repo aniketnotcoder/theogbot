@@ -1048,7 +1048,7 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 			"3. Join storage: open the invite link from the account you want to use to view your files. This is important when it is different from your connected source account.\n" +
 			"4. Batch transfer: paste post links, or use /batch <chat-link> 61 to 309 for an inclusive ID range.\n" +
 			"5. Copy history: paste a chat link to copy its accessible history.\n" +
-			"6. Wistia: use /wistia <post-link> [parallel|stream] (parallel is the default) to upload a video.\n\n" +
+			"6. Wistia: /wistia <post-link> [post-link ...], /wistia batch <chat-link> <start> to <end>, or /wistia copy <chat-link> [limit].\n   Wistia returns direct .bin and .mp4 delivery URLs.\n\n" +
 			"Use Cancel transfer whenever you need to stop a running job."
 	}
 	markup := map[string]any{"inline_keyboard": [][]map[string]string{
@@ -1138,12 +1138,24 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,batchLinks)}()}
 		case "wistia":
 			fields := strings.Fields(value)
-			if len(fields) < 1 || len(fields) > 2 { _ = b.sendMessage(ctx,msg.Chat.ID,"Send one Telegram video post link. Parallel is the default; add stream for zero-disk mode."); return true }
-			mode := "parallel"
-			if len(fields) == 2 { mode = strings.ToLower(fields[1]) }
-			if mode != "stream" && mode != "parallel" { _ = b.sendMessage(ctx,msg.Chat.ID,"Mode must be parallel or stream."); return true }
-			if b.wistia == nil { _ = b.sendMessage(ctx,msg.Chat.ID,"Wistia is not configured on this deployment."); return true }
-			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok { _ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.") } else { go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],mode)}() }
+			if len(fields) == 0 { _ = b.sendMessage(ctx,msg.Chat.ID,"Send post links, 'batch <chat-link> <start> to <end>', or 'copy <chat-link> [limit]."); return true }
+			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok { _ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")
+			} else if strings.EqualFold(fields[0],"copy") {
+				if len(fields)<2||len(fields)>3 { b.finishJob(msg.From.ID);_ = b.sendMessage(ctx,msg.Chat.ID,"Usage: copy <chat-link> [limit].");return true }
+				limit:=100
+				if len(fields)==3 { n,e:=strconv.Atoi(fields[2]);if e!=nil||n<1||n>50000 { b.finishJob(msg.From.ID);_ = b.sendMessage(ctx,msg.Chat.ID,"Limit must be between 1 and 50000.");return true };limit=n }
+				go func(){defer b.finishJob(msg.From.ID);b.runWistiaCopy(jobCtx,msg.From.ID,msg.Chat.ID,fields[1],limit)}()
+			} else if strings.EqualFold(fields[0],"batch") {
+				rawLinks,e:=parseBatchCommand(append([]string{"/batch"},fields[1:]...))
+				if e!=nil { b.finishJob(msg.From.ID);_ = b.sendMessage(ctx,msg.Chat.ID,e.Error());return true }
+				go func(){defer b.finishJob(msg.From.ID);b.runWistiaLinks(jobCtx,msg.From.ID,msg.Chat.ID,rawLinks)}()
+			} else {
+				mode:="parallel"
+				if len(fields)>1&&(strings.EqualFold(fields[len(fields)-1],"parallel")||strings.EqualFold(fields[len(fields)-1],"stream")) { mode=strings.ToLower(fields[len(fields)-1]);fields=fields[:len(fields)-1] }
+				if len(fields)==0 { b.finishJob(msg.From.ID);_ = b.sendMessage(ctx,msg.Chat.ID,"At least one Telegram post link is required.");return true }
+				if len(fields)==1 { go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],mode)}()
+				} else { go func(){defer b.finishJob(msg.From.ID);b.runWistiaLinks(jobCtx,msg.From.ID,msg.Chat.ID,fields)}() }
+			}
 		case "copy":
 			fields:=strings.Fields(value);if len(fields)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send a Telegram chat link, optionally followed by a limit.");return true}
 			limit:=100;if len(fields)>1{n,err:=strconv.Atoi(fields[1]);if err!=nil||n<1||n>50000{_ = b.sendMessage(ctx,msg.Chat.ID,"Limit must be between 1 and 50000.");return true};limit=n}
@@ -1216,7 +1228,7 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	case "transfer:wistia":
 		if b.wistia == nil { _ = b.sendMessage(ctx,chatID,"Wistia is not configured on this deployment."); return }
 		b.setPendingInput(userID,"wistia")
-		b.sendForceReply(ctx,chatID,"Send a Telegram video post link. Use /wistia <post-link> [parallel|stream] (parallel is the default) for explicit mode.","Telegram video post link")
+		b.sendForceReply(ctx,chatID,"Send post links, 'batch <chat-link> <start> to <end>', or 'copy <chat-link> [limit]'. Direct .bin/.mp4 URLs are returned.","Wistia source")
 	case "job:cancel":
 		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
 	case "account:logout":
