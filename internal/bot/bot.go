@@ -396,12 +396,19 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []string) {
 	ctx:=parent
 	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your account first using the menu.");return}
-	var source tg.InputPeerClass;ids:=make([]int,0,len(rawLinks))
+	var source tg.InputPeerClass
+	ids:=make([]int,0,len(rawLinks))
+	resolved:=make(map[string]tg.InputPeerClass)
 	for _,raw:=range rawLinks{
 		parsed,err:=links.Parse(raw);if err!=nil{_=b.sendMessage(ctx,chatID,"Invalid Telegram post link: "+raw);return}
-		var peer tg.InputPeerClass
-		if parsed.Username!=""{peer,err=forward.ResolveUsername(ctx,api,parsed.Username)}else{peer,err=forward.ResolvePrivateChannelID(ctx,api,parsed.ChannelID)}
-		if err!=nil{_=b.sendMessage(ctx,chatID,"Cannot access source chat: "+err.Error());return}
+		key:=fmt.Sprintf("channel:%d",parsed.ChannelID)
+		if parsed.Username!=""{key="username:"+strings.ToLower(parsed.Username)}
+		peer:=resolved[key]
+		if peer==nil {
+			if parsed.Username!=""{peer,err=forward.ResolveUsername(ctx,api,parsed.Username)}else{peer,err=forward.ResolvePrivateChannelID(ctx,api,parsed.ChannelID)}
+			if err!=nil{_=b.sendMessage(ctx,chatID,"Cannot access source chat: "+err.Error());return}
+			resolved[key]=peer
+		}
 		if source!=nil&&peerKey(source)!=peerKey(peer){_=b.sendMessage(ctx,chatID,"All /batch links must belong to the same source chat.");return}
 		source=peer;ids=append(ids,parsed.MessageID)
 	}
@@ -1048,6 +1055,14 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 			batchLinks, parseErr := parseBatchCommand(append([]string{"/batch"}, strings.Fields(value)...))
 			if parseErr != nil { _ = b.sendMessage(ctx,msg.Chat.ID,parseErr.Error()); return true }
 			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,batchLinks)}()}
+		case "wistia":
+			fields := strings.Fields(value)
+			if len(fields) < 1 || len(fields) > 2 { _ = b.sendMessage(ctx,msg.Chat.ID,"Send one Telegram video post link, optionally followed by stream or parallel."); return true }
+			mode := "stream"
+			if len(fields) == 2 { mode = strings.ToLower(fields[1]) }
+			if mode != "stream" && mode != "parallel" { _ = b.sendMessage(ctx,msg.Chat.ID,"Mode must be stream or parallel."); return true }
+			if b.wistia == nil { _ = b.sendMessage(ctx,msg.Chat.ID,"Wistia is not configured on this deployment."); return true }
+			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok { _ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.") } else { go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],mode)}() }
 		case "copy":
 			fields:=strings.Fields(value);if len(fields)==0{_ = b.sendMessage(ctx,msg.Chat.ID,"Send a Telegram chat link, optionally followed by a limit.");return true}
 			limit:=100;if len(fields)>1{n,err:=strconv.Atoi(fields[1]);if err!=nil||n<1||n>50000{_ = b.sendMessage(ctx,msg.Chat.ID,"Limit must be between 1 and 50000.");return true};limit=n}
@@ -1118,6 +1133,8 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 		b.setPendingInput(userID,"copy")
 		b.sendForceReply(ctx,chatID,"Send a Telegram chat link and optionally a message limit (default 100).","Chat link [limit]")
 	case "transfer:wistia":
+		if b.wistia == nil { _ = b.sendMessage(ctx,chatID,"Wistia is not configured on this deployment."); return }
+		b.setPendingInput(userID,"wistia")
 		b.sendForceReply(ctx,chatID,"Send a Telegram video post link. Use /wistia <post-link> [stream|parallel] for explicit mode.","Telegram video post link")
 	case "job:cancel":
 		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
