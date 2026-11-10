@@ -569,7 +569,7 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 	if len(retryTasks) > 0 {
 		if ctx.Err() == nil {
 			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("First pass complete. Retrying %d failed upload group(s) once at the end; no new Telegram downloads are needed.", len(retryTasks)))
-			retried, retryRefs := b.retryFailedUploads(ctx, destinationPeer, d, label, destinationTopicID, retryTasks, progress, len(ids), done, failed, skipped)
+			retried, retryRefs := b.retryFailedUploads(ctx, destinationPeer, d, label, destinationTopicID, retryTasks, progress, chatID, done, failed, skipped)
 			done += retried
 			failed -= retried
 			resultRefs = append(resultRefs, retryRefs...)
