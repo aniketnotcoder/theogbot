@@ -318,7 +318,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		} else if !b.wistia.HasDataAPI() {
 			reply = "Direct .bin/.mp4 delivery URLs require WISTIA_DATA_API_TOKEN with Read all folder and media data permission."
 		} else if len(fields) < 2 {
-			reply = "Usage: /wistia <post-link> [post-link ...], /wistia batch <chat-link> <start> to <end>, or /wistia copy <chat-link> [limit]."
+			reply = "Usage: /wistia <post-link>, /wistia batch <chat-link> <start> to <end>, /wistia copy <chat-link> [limit], or /wistia resume <failed-post-link> to <end>."
 		} else if strings.EqualFold(fields[1], "resume") {
 			rawLink, startID, endID, parseErr := parseWistiaResumeCommand(fields)
 			if parseErr != nil {
