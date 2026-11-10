@@ -23,6 +23,7 @@ type Config struct {
 	APIVersion    string
 	HTTPClient    *http.Client
 	PollInterval  time.Duration
+	DownloadThreads int
 }
 
 func ConfigFromEnv() (Config, error) {
