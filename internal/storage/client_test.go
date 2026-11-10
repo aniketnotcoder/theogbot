@@ -92,7 +92,7 @@ func TestLargeFileUploaderUsesMaximumTelegramPartSize(t *testing.T) {
 		t.Fatalf("upload part size = %d, want Telegram maximum 512 KiB", uploadPartSize)
 	}
 	if uploadThreads != 8 {
-		t.Fatalf("upload workers = %d, want configured starting point 8", uploadThreads)
+		t.Fatalf("upload workers = %d, want safer default 4", uploadThreads)
 	}
 	const largeFileSize int64 = 208 * 1024 * 1024
 	parts := (largeFileSize + int64(uploadPartSize) - 1) / int64(uploadPartSize)
