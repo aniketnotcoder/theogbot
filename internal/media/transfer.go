@@ -35,6 +35,15 @@ func (w *progressWriterAt) WriteAt(p []byte, off int64) (int, error) {
 
 const minFreeDiskBytes int64 = 128 << 20
 
+func tempFilePattern(kind string) string {
+	if kind == "photo" {
+		// Telegram validates the uploaded photo's filename extension.
+		// FromPath uses the temporary file's basename as InputFile.Name.
+		return "theogbot-*.jpg"
+	}
+	return "theogbot-*"
+}
+
 func enoughDiskSpace(available, expected int64) bool {
 	if expected < 0 || expected > MaxDownloadBytes { return false }
 	return available >= expected+minFreeDiskBytes
@@ -90,7 +99,7 @@ func DownloadMessageWithProgress(ctx context.Context, api *tg.Client, elem messa
 	if doc, ok := elem.Document(); ok { expectedSize = doc.Size }
 	if expectedSize > MaxDownloadBytes { return nil, fmt.Errorf("media is larger than the configured %d-byte limit", MaxDownloadBytes) }
 	if err := checkDiskSpace(tempDir, expectedSize); err != nil { return nil, err }
-	f, err := os.CreateTemp(tempDir, "theogbot-*")
+	f, err := os.CreateTemp(tempDir, tempFilePattern(kind))
 	if err != nil { return nil, fmt.Errorf("create temp file: %w", err) }
 	path := f.Name()
 	closed := false

@@ -60,3 +60,15 @@ func TestEnoughDiskSpaceIncludesReserveAndRejectsOversize(t *testing.T) {
 	if enoughDiskSpace(minFreeDiskBytes+1023,1024) { t.Fatal("expected insufficient reserve to fail") }
 	if enoughDiskSpace(4<<30,MaxDownloadBytes+1) { t.Fatal("expected oversize to fail") }
 }
+
+func TestTempFilePatternUsesJPGForPhotos(t *testing.T) {
+	if got := tempFilePattern("photo"); got != "theogbot-*.jpg" {
+		t.Fatalf("photo temp pattern = %q, want .jpg suffix", got)
+	}
+	if got := tempFilePattern("document"); got != "theogbot-*" {
+		t.Fatalf("document temp pattern = %q, want unchanged generic pattern", got)
+	}
+	if got := tempFilePattern("video"); got != "theogbot-*" {
+		t.Fatalf("video temp pattern = %q, want unchanged generic pattern", got)
+	}
+}
