@@ -124,7 +124,7 @@ func (b *Bot) runWistia(parent context.Context, userID, chatID int64, rawLink, m
 		status = "uploaded; processing status not checked (Data API read token not configured)"
 	}
 	b.finishWistiaProgress(ctx, progress, true)
-	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Wistia upload successful!\n\nStatus: %s\nMedia ID: %s\nPlayer URL: %s\nEmbed URL: %s", status, hashedID, resultURL, resultURL))
+	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Wistia upload successful!\n\nStatus: %s\nMedia ID: %s\nPlayer URL: %s\nEmbed URL: %s\n\nHTML embed code:\n<iframe src=\"%s\" title=\"Wistia video\" allow=\"autoplay; fullscreen\" allowtransparency=\"true\" frameborder=\"0\" scrolling=\"no\" width=\"640\" height=\"360\"></iframe>", status, hashedID, resultURL, resultURL, resultURL))
 }
 
 func (b *Bot) finishWistiaProgress(ctx context.Context, progress *progressReporter, success bool) {
