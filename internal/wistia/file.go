@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/gotd/td/telegram/downloader"
@@ -21,13 +22,19 @@ type downloadWriterAt struct {
 	total int64
 	written atomic.Int64
 	progress StageProgressFunc
+	progressMu sync.Mutex
 }
 
 func (w *downloadWriterAt) WriteAt(p []byte, off int64) (int, error) {
+	if off < 0 || off > w.total || int64(len(p)) > w.total-off {
+		return 0, fmt.Errorf("download chunk exceeds declared Telegram video size")
+	}
 	n, err := w.file.WriteAt(p, off)
 	current := w.written.Add(int64(n))
 	if n > 0 && w.progress != nil {
+		w.progressMu.Lock()
 		w.progress("Downloading", current, w.total)
+		w.progressMu.Unlock()
 	}
 	return n, err
 }
