@@ -127,7 +127,8 @@ func progressStage(stage string) string {
 	switch {
 	case strings.Contains(s,"cancel"): return "Cancelling"
 	case strings.Contains(s,"finish"): return "Finishing"
-	case strings.Contains(s,"upload"): return "Uploading"
+	case strings.Contains(s,"process"): return "Processing"
+	case strings.Contains(s,"upload"), strings.Contains(s,"stream"): return "Uploading"
 	case strings.Contains(s,"download"): return "Downloading"
 	case strings.Contains(s,"retriev"),strings.Contains(s,"ready"),strings.Contains(s,"prepar"): return "Preparing"
 	default: return "Transferring"
@@ -138,6 +139,7 @@ func formatProgress(label, stage string, current, total, done, failed, skipped i
 	processed:=done+failed+skipped
 	percent:=0
 	if total>0 { percent=processed*100/total }
+	if strings.Contains(strings.ToLower(stage),"process") { percent=100 }
 	if percent>100 { percent=100 }
 	if byteTotal>0 {
 		bytePercent:=int(float64(byteCurrent)*100/float64(byteTotal))
@@ -314,12 +316,12 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		} else if b.wistia == nil {
 			reply = "Wistia upload is not configured. Set WISTIA_API_TOKEN and WISTIA_PROJECT_ID in Railway, then redeploy."
 		} else if len(fields) < 2 || len(fields) > 3 {
-			reply = "Usage: /wistia https://t.me/channel/123 [stream|parallel]"
+			reply = "Usage: /wistia https://t.me/channel/123 [parallel|stream] (parallel is the default)"
 		} else {
-			mode := "stream"
+			mode := "parallel"
 			if len(fields) == 3 { mode = strings.ToLower(fields[2]) }
 			if mode != "stream" && mode != "parallel" {
-				reply = "Mode must be stream (zero disk) or parallel (temporary disk, parallel Telegram download)."
+				reply = "Mode must be parallel (default, temporary disk and parallel Telegram download) or stream (zero disk)."
 			} else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok {
 				reply = "A transfer is already running. Send /cancel first."
 			} else {
@@ -1078,10 +1080,10 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{_ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.")}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,batchLinks)}()}
 		case "wistia":
 			fields := strings.Fields(value)
-			if len(fields) < 1 || len(fields) > 2 { _ = b.sendMessage(ctx,msg.Chat.ID,"Send one Telegram video post link, optionally followed by stream or parallel."); return true }
-			mode := "stream"
+			if len(fields) < 1 || len(fields) > 2 { _ = b.sendMessage(ctx,msg.Chat.ID,"Send one Telegram video post link. Parallel is the default; add stream for zero-disk mode."); return true }
+			mode := "parallel"
 			if len(fields) == 2 { mode = strings.ToLower(fields[1]) }
-			if mode != "stream" && mode != "parallel" { _ = b.sendMessage(ctx,msg.Chat.ID,"Mode must be stream or parallel."); return true }
+			if mode != "stream" && mode != "parallel" { _ = b.sendMessage(ctx,msg.Chat.ID,"Mode must be parallel or stream."); return true }
 			if b.wistia == nil { _ = b.sendMessage(ctx,msg.Chat.ID,"Wistia is not configured on this deployment."); return true }
 			if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok { _ = b.sendMessage(ctx,msg.Chat.ID,"A transfer is already running. Use Cancel transfer first.") } else { go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],mode)}() }
 		case "copy":
