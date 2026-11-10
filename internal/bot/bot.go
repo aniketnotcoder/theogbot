@@ -1016,7 +1016,7 @@ func (b *Bot) sendWelcome(ctx context.Context, chatID int64, tutorial bool) {
 			"3. Join storage: open the invite link from the account you want to use to view your files. This is important when it is different from your connected source account.\n" +
 			"4. Batch transfer: paste post links, or use /batch <chat-link> 61 to 309 for an inclusive ID range.\n" +
 			"5. Copy history: paste a chat link to copy its accessible history.\n" +
-			"6. Wistia: use /wistia <post-link> [stream|parallel] to upload a video.\n\n" +
+			"6. Wistia: use /wistia <post-link> [parallel|stream] (parallel is the default) to upload a video.\n\n" +
 			"Use Cancel transfer whenever you need to stop a running job."
 	}
 	markup := map[string]any{"inline_keyboard": [][]map[string]string{
@@ -1184,7 +1184,7 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	case "transfer:wistia":
 		if b.wistia == nil { _ = b.sendMessage(ctx,chatID,"Wistia is not configured on this deployment."); return }
 		b.setPendingInput(userID,"wistia")
-		b.sendForceReply(ctx,chatID,"Send a Telegram video post link. Use /wistia <post-link> [stream|parallel] for explicit mode.","Telegram video post link")
+		b.sendForceReply(ctx,chatID,"Send a Telegram video post link. Use /wistia <post-link> [parallel|stream] (parallel is the default) for explicit mode.","Telegram video post link")
 	case "job:cancel":
 		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
 	case "account:logout":
