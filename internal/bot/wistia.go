@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -159,7 +160,7 @@ func (b *Bot) runWistiaCopy(parent context.Context, userID, chatID int64, rawCha
 		_ = b.sendMessage(ctx, chatID, "Wistia forum copy finished. Topic labels were retained in media names.")
 		return
 	}
-	if forumErr.Error() != forward.ErrNotForum.Error() {
+	if !errors.Is(forumErr, forward.ErrNotForum) {
 		_ = b.sendMessage(ctx, chatID, "Forum inspection failed: "+forumErr.Error())
 		return
 	}
