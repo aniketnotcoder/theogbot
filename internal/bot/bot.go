@@ -347,9 +347,9 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		} else {
 			rawLinks := append([]string(nil), fields[1:]...)
 			mode := "parallel"
-			if len(rawLinks) == 2 && (strings.EqualFold(rawLinks[1], "parallel") || strings.EqualFold(rawLinks[1], "stream")) {
-				mode = strings.ToLower(rawLinks[1])
-				rawLinks = rawLinks[:1]
+			if len(rawLinks) >= 2 && (strings.EqualFold(rawLinks[len(rawLinks)-1], "parallel") || strings.EqualFold(rawLinks[len(rawLinks)-1], "stream")) {
+				mode = strings.ToLower(rawLinks[len(rawLinks)-1])
+				rawLinks = rawLinks[:len(rawLinks)-1]
 			}
 			if jobCtx, ok := b.startJob(msg.From.ID, ctx); !ok {
 				reply = "A transfer is already running. Send /cancel first."
