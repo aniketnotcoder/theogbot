@@ -131,7 +131,7 @@ func (c *Client) GetMedia(ctx context.Context, hashedID string) (MediaInfo, erro
 		}
 	}
 	if assetURL, assetType := findMP4AssetURL(raw); assetURL != "" {
-		info.DeliveryURL = assetURL
+		info.DeliveryURL = normalizeDeliveryURL(assetURL)
 		info.MP4URL = mp4AssetURL(assetURL, info.Name)
 		info.AssetType = assetType
 	}
@@ -173,6 +173,14 @@ func findMP4AssetURL(value any) (string, string) {
 	}
 	walk(value)
 	return bestURL, bestType
+}
+
+func normalizeDeliveryURL(assetURL string) string {
+	u, err := url.Parse(assetURL)
+	if err != nil { return "" }
+	u.Scheme = "https"
+	if strings.EqualFold(u.Host, "embed.wistia.com") { u.Host = "embed-ssl.wistia.com" }
+	return u.String()
 }
 
 // mp4AssetURL applies Wistia's documented extension convention to an asset URL.
