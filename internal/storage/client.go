@@ -26,12 +26,59 @@ type TransferProgress func(current, total int64)
 // Use Telegram's maximum supported upload part size to keep large files
 // below the server's part-count ceiling. gotd handles safe MTProto request
 // retries after connection loss; do not retry an uncertain final message send.
-const uploadThreads = 8
+const uploadThreads = 4
 const uploadPartSize = uploader.MaximumPartSize
 func uploadWorkerCount() int { n,e:=strconv.Atoi(strings.TrimSpace(os.Getenv("THEOGBOT_UPLOAD_THREADS")));if e!=nil||n<1||n>32{return uploadThreads};return n }
 
 func newTransferUploader(api *tg.Client) *uploader.Uploader {
 	return uploader.NewUploader(api).WithPartSize(uploadPartSize).WithThreads(uploadWorkerCount())
+}
+
+// uploadFileWithRetry retries only the file-part upload stage. It is safe to
+// replay because no Telegram message has been sent yet. The final send RPC is
+// deliberately kept outside this retry boundary to avoid duplicate messages.
+func uploadFileWithRetry(ctx context.Context, api *tg.Client, path string, total int64, progress TransferProgress) (tg.InputFileClass, error) {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		u := newTransferUploader(api).WithProgress(&uploadProgress{total: total, callback: progress})
+		file, err := u.FromPath(ctx, path)
+		if err == nil {
+			return file, nil
+		}
+		lastErr = err
+		if !retryableUploadPartError(err) || attempt == maxAttempts {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt) * 750 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, fmt.Errorf("Telegram file-part upload failed after retry policy: %w", lastErr)
+}
+
+func retryableUploadPartError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"forcibly closed", "context canceled", "connection reset",
+		"broken pipe", "unexpected eof", "i/o timeout",
+		"temporary", "transport is closing", "use of closed network connection",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 type uploadProgress struct { mu sync.Mutex; uploaded map[int64]int64; total int64; callback TransferProgress }
@@ -127,9 +174,9 @@ func (c *Client) UploadPathToWithProgress(ctx context.Context, destination tg.In
 	c.mu.RLock(); api,configuredPeer:=c.api,c.targetPeer; peer:=destination; if peer==nil{peer=configuredPeer}; target:=c.target; c.mu.RUnlock()
 	info,err:=os.Stat(path);if err!=nil{return nil,fmt.Errorf("stat upload file: %w",err)}
 	return retryFloodWait(ctx,func()(tg.UpdatesClass,error){
-		u:=newTransferUploader(api).WithProgress(&uploadProgress{total:info.Size(),callback:progress})
+		u:=newTransferUploader(api)
 		s:=message.NewSender(api).WithUploader(u)
-		file,err:=u.FromPath(ctx,path);if err!=nil{return nil,fmt.Errorf("upload file: %w",err)}
+		file,err:=uploadFileWithRetry(ctx,api,path,info.Size(),progress);if err!=nil{return nil,fmt.Errorf("upload file: %w",err)}
 		captionOption:=captionOptions(caption,entities)
 		if kind=="photo"{if peer!=nil{return s.To(peer).UploadedPhoto(ctx,file,captionOption...)};return s.Resolve(target).UploadedPhoto(ctx,file,captionOption...)}
 		preserved:=make([]tg.DocumentAttributeClass,0,len(attrs));for _,attr:=range attrs{if _,isFilename:=attr.(*tg.DocumentAttributeFilename);!isFilename{preserved=append(preserved,attr)}}
@@ -159,7 +206,8 @@ func (c *Client) UploadAlbumToWithProgress(ctx context.Context,destination tg.In
 		u:=newTransferUploader(api).WithProgress(&uploadProgress{total:total,callback:progress});s:=message.NewSender(api).WithUploader(u)
 		options:=make([]message.MultiMediaOption,0,len(items))
 		for i,item:=range items{
-			file,err:=u.FromPath(ctx,item.Path);if err!=nil{return nil,fmt.Errorf("upload album item %d: %w",i+1,err)}
+			info,statErr:=os.Stat(item.Path);if statErr!=nil{return nil,fmt.Errorf("stat album item %d: %w",i+1,statErr)}
+			file,err:=uploadFileWithRetry(ctx,api,item.Path,info.Size(),progress);if err!=nil{return nil,fmt.Errorf("upload album item %d: %w",i+1,err)}
 			caption:=captionOptions(item.Caption,item.Entities);var option message.MediaOption
 			if item.Kind=="photo"{option=message.UploadedPhoto(file,caption...)}else{preserved:=make([]tg.DocumentAttributeClass,0,len(item.Attributes));for _,attr:=range item.Attributes{if _,isFilename:=attr.(*tg.DocumentAttributeFilename);!isFilename{preserved=append(preserved,attr)}};option=message.UploadedDocument(file,caption...).Filename(item.Filename).MIME(item.MIME).Attributes(preserved...)}
 			options=append(options,message.ForceMulti(option))
