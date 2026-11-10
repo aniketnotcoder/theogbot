@@ -85,7 +85,7 @@ func (b *Bot) retryFailedUploads(
 		} else {
 			succeeded += len(task.items)
 			refs = append(refs, destinationMessageRefs(dest, updates)...)
-			_ = b.sendMessage(ctx, dest.ChatID, fmt.Sprintf("%s retry succeeded for original item %d (%d item(s)).", label, task.firstIndex, len(task.items)))
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s retry succeeded for original item %d (%d item(s)).", label, task.firstIndex, len(task.items)))
 		}
 		for _, item := range task.items {
 			if cleanupErr := item.Cleanup(); cleanupErr != nil {
