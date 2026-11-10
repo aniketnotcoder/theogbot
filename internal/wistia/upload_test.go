@@ -90,19 +90,22 @@ func TestUploadPath(t *testing.T) {
 	if result.HashedID != "file123" { t.Fatalf("hashed id = %q", result.HashedID) }
 }
 
-func TestUploadSourceRejectsSizeMismatch(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_, _ = io.WriteString(w, `{"hashed_id":"should-not-succeed"}`)
-	}))
-	defer server.Close()
-	client, err := NewClient(Config{UploadToken:"token",FolderID:"folder",UploadEndpoint:server.URL,HTTPClient:server.Client()})
-	if err != nil { t.Fatal(err) }
-	_, err = client.UploadSource(context.Background(), "x.mp4", "x", 10, func(ctx context.Context, dst io.Writer)(int64,error) {
-		n, writeErr := dst.Write([]byte("short"))
-		return int64(n), writeErr
-	})
-	if err == nil || !strings.Contains(err.Error(), "source size mismatch") { t.Fatalf("expected size mismatch, got %v", err) }
+func TestExactSizeWriterRejectsOverflow(t *testing.T) {
+	var output strings.Builder
+	writer := &exactSizeWriter{w: &output, remaining: 5}
+	if _, err := writer.Write([]byte("123456")); err == nil {
+		t.Fatal("expected oversized write to fail")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("oversized write wrote %d bytes", output.Len())
+	}
+	n, err := writer.Write([]byte("12345"))
+	if err != nil || n != 5 {
+		t.Fatalf("expected exact-size write, n=%d err=%v", n, err)
+	}
+	if writer.written != 5 || writer.remaining != 0 {
+		t.Fatalf("unexpected writer accounting: %+v", writer)
+	}
 }
 
 func TestNewClientRequiresUploadTokenAndFolder(t *testing.T) {
