@@ -154,7 +154,9 @@ func findMP4AssetURL(value any) (string, string) {
 					assetURL, _ := asset["url"].(string)
 					assetType, _ := asset["type"].(string)
 					contentType, _ := asset["contentType"].(string)
-					if assetURL == "" || (!strings.HasPrefix(strings.ToLower(contentType), "video/") && !strings.HasSuffix(strings.ToLower(assetURL), ".bin") && !strings.HasSuffix(strings.ToLower(assetURL), ".mp4")) { continue }
+					if assetURL == "" || strings.Contains(strings.ToLower(assetType), "image") { continue }
+					if contentType != "" && !strings.HasPrefix(strings.ToLower(contentType), "video/") { continue }
+					if contentType == "" && !strings.HasSuffix(strings.ToLower(assetURL), ".bin") && !strings.HasSuffix(strings.ToLower(assetURL), ".mp4") { continue }
 					rank := 1
 					switch assetType {
 					case "HdMp4VideoFile": rank = 5
