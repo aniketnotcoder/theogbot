@@ -27,6 +27,7 @@ import (
 	"github.com/gotd/td/telegram/query/messages"
 	"github.com/aniketnotcoder/theogbot/internal/storage"
 	"github.com/aniketnotcoder/theogbot/internal/storageprefs"
+	"github.com/aniketnotcoder/theogbot/internal/wistia"
 	"github.com/gotd/td/tg"
 )
 
@@ -40,6 +41,7 @@ type Bot struct {
 	offset int64
 	accounts *account.Manager
 	storage *storage.Client
+	wistia *wistia.Client
 	tempDir string
 	jobsMu sync.Mutex
 	jobs map[int64]context.CancelFunc
@@ -234,6 +236,7 @@ func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
 }
 
 func (b *Bot) SetStorage(client *storage.Client) { b.storage = client }
+func (b *Bot) SetWistia(client *wistia.Client) { b.wistia = client }
 func (b *Bot) SetTempDir(path string) { b.tempDir = path }
 func (b *Bot) SetStoragePrefs(store *storageprefs.Store) error {
 	if store == nil { return fmt.Errorf("storage preferences database is nil") }
@@ -295,7 +298,34 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		_=b.deleteMessage(ctx,msg.Chat.ID,msg.MessageID);password:=strings.TrimSpace(strings.TrimPrefix(text,fields[0]))
 		if password==""{reply="Usage: /password YOUR_2FA_PASSWORD"}else if err:=b.accounts.SubmitPassword(msg.From.ID,password);err!=nil{reply="Could not submit password: "+err.Error()}else{reply="2-step verification password submitted."}
 	case "/batch":
-		if len(fields)<2{reply="Usage: /batch https://t.me/channel/123 [https://t.me/channel/124]"}else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,fields[1:])}();return}
+		batchLinks, parseErr := parseBatchCommand(fields)
+		if parseErr != nil {
+			reply = parseErr.Error()
+		} else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok {
+			reply="A transfer is already running. Send /cancel first."
+		} else {
+			go func(){defer b.finishJob(msg.From.ID);b.runBatch(jobCtx,msg.From.ID,msg.Chat.ID,batchLinks)}()
+			return
+		}
+	case "/wistia":
+		if msg.Chat.Type != "private" {
+			reply = "For privacy, use /wistia in a private chat with this bot."
+		} else if b.wistia == nil {
+			reply = "Wistia upload is not configured. Set WISTIA_API_TOKEN and WISTIA_PROJECT_ID in Railway, then redeploy."
+		} else if len(fields) < 2 || len(fields) > 3 {
+			reply = "Usage: /wistia https://t.me/channel/123 [stream|parallel]"
+		} else {
+			mode := "stream"
+			if len(fields) == 3 { mode = strings.ToLower(fields[2]) }
+			if mode != "stream" && mode != "parallel" {
+				reply = "Mode must be stream (zero disk) or parallel (temporary disk, parallel Telegram download)."
+			} else if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok {
+				reply = "A transfer is already running. Send /cancel first."
+			} else {
+				go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[1],mode)}()
+				return
+			}
+		}
 	case "/copy":
 		if len(fields)<2{reply="Usage: /copy https://t.me/channel [LIMIT]"}else{limit:=100;if len(fields)>2{n,err:=strconv.Atoi(fields[2]);if err!=nil||n<1||n>50000{reply="LIMIT must be between 1 and 50000."}else{limit=n}};if reply==""{if jobCtx,ok:=b.startJob(msg.From.ID,ctx);!ok{reply="A transfer is already running. Send /cancel first."}else{go func(){defer b.finishJob(msg.From.ID);b.runCopy(jobCtx,msg.From.ID,msg.Chat.ID,fields[1],limit)}();return}}}
 	case "/cancel":
@@ -1084,6 +1114,8 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	case "transfer:copy":
 		b.setPendingInput(userID,"copy")
 		b.sendForceReply(ctx,chatID,"Send a Telegram chat link and optionally a message limit (default 100).","Chat link [limit]")
+	case "transfer:wistia":
+		b.sendForceReply(ctx,chatID,"Send a Telegram video post link. Use /wistia <post-link> [stream|parallel] for explicit mode.","Telegram video post link")
 	case "job:cancel":
 		if b.cancelJob(userID){_ = b.sendMessage(ctx,chatID,"Cancellation requested. The current operation will stop safely.")}else{_ = b.sendMessage(ctx,chatID,"There is no active transfer.")}
 	case "account:logout":
