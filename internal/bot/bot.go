@@ -347,9 +347,9 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 		} else {
 			rawLinks := append([]string(nil), fields[1:]...)
 			mode := "parallel"
-			if len(rawLinks) >= 2 && (strings.EqualFold(rawLinks[len(rawLinks)-1], "parallel") || strings.EqualFold(rawLinks[len(rawLinks)-1], "stream")) {
-				mode = strings.ToLower(rawLinks[len(rawLinks)-1])
-				rawLinks = rawLinks[:len(rawLinks)-1]
+			if len(rawLinks) == 2 && (strings.EqualFold(rawLinks[1], "parallel") || strings.EqualFold(rawLinks[1], "stream")) {
+				mode = strings.ToLower(rawLinks[1])
+				rawLinks = rawLinks[:1]
 			}
 			if jobCtx, ok := b.startJob(msg.From.ID, ctx); !ok {
 				reply = "A transfer is already running. Send /cancel first."
@@ -1151,7 +1151,7 @@ func (b *Bot) handlePendingInput(ctx context.Context,msg *incomingMessage,value 
 				go func(){defer b.finishJob(msg.From.ID);b.runWistiaLinks(jobCtx,msg.From.ID,msg.Chat.ID,rawLinks)}()
 			} else {
 				mode:="parallel"
-				if len(fields)>1&&(strings.EqualFold(fields[len(fields)-1],"parallel")||strings.EqualFold(fields[len(fields)-1],"stream")) { mode=strings.ToLower(fields[len(fields)-1]);fields=fields[:len(fields)-1] }
+				if len(fields)==2&&(strings.EqualFold(fields[1],"parallel")||strings.EqualFold(fields[1],"stream")) { mode=strings.ToLower(fields[1]);fields=fields[:1] }
 				if len(fields)==0 { b.finishJob(msg.From.ID);_ = b.sendMessage(ctx,msg.Chat.ID,"At least one Telegram post link is required.");return true }
 				if len(fields)==1 { go func(){defer b.finishJob(msg.From.ID);b.runWistia(jobCtx,msg.From.ID,msg.Chat.ID,fields[0],mode)}()
 				} else { go func(){defer b.finishJob(msg.From.ID);b.runWistiaLinks(jobCtx,msg.From.ID,msg.Chat.ID,fields)}() }
