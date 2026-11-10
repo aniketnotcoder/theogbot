@@ -85,7 +85,7 @@ type incomingMessage struct {
 	Video *struct { FileID string `json:"file_id"` } `json:"video"`
 }
 type destination struct { ChatID int64; Title string; Username string }
-type retryTask struct { items []*media.Downloaded; album bool; firstIndex int }
+type retryTask struct { elements []messages.Elem; ids []int; album bool; firstIndex int }
 type otpInput struct { ChatID int64; MessageID int64; Code string; Photo bool }
 type botIdentity struct { Username string `json:"username"` }
 type sentMessage struct { MessageID int64 `json:"message_id"`; Photo []json.RawMessage `json:"photo"` }
@@ -519,7 +519,8 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 				if destinationTopicID>0 { updates,uploadErr=b.storage.UploadAlbumToForumTopicWithProgress(ctx,destinationPeer,destinationTopicID,items,albumProgress) } else { updates,uploadErr=b.storage.UploadAlbumToWithProgress(ctx,destinationPeer,items,albumProgress) }
 				if uploadErr != nil {
 					failed += groupLen
-					retryTasks = append(retryTasks, retryTask{items: downloads, album: true, firstIndex: i+1})
+					for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
+					retryTasks = append(retryTasks, retryTask{elements: append([]messages.Elem(nil), elements[i:i+groupLen]...), ids: append([]int(nil), ids[i:i+groupLen]...), album: true, firstIndex: i+1})
 					_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s album [%d-%d/%d] upload failed; queued for one retry at the end: %v", label, i+1, i+groupLen, len(ids), uploadErr))
 				} else {
 					for _, item := range downloads { if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("temporary album file cleanup failed", "path", item.Path, "error", cleanupErr) } }
@@ -562,7 +563,8 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 		if destinationTopicID>0 { updates,uploadErr=b.storage.UploadPathToForumTopicWithProgress(ctx,destinationPeer,destinationTopicID,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes,downloaded.Entities,uploadProgress) } else { updates,uploadErr=b.storage.UploadPathToWithProgress(ctx,destinationPeer,downloaded.Path,downloaded.Name,downloaded.MIME,downloaded.Caption,downloaded.Kind,downloaded.Attributes,downloaded.Entities,uploadProgress) }
 		if uploadErr != nil {
 			failed++
-			retryTasks = append(retryTasks, retryTask{items: []*media.Downloaded{downloaded}, firstIndex: i+1})
+			if cleanupErr := downloaded.Cleanup(); cleanupErr != nil { b.log.Warn("temporary file cleanup failed after failed upload", "path", downloaded.Path, "error", cleanupErr) }
+			retryTasks = append(retryTasks, retryTask{elements: []messages.Elem{elem}, ids: []int{id}, firstIndex: i+1})
 			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] upload failed for message %d; queued for one retry at the end: %v", label, i+1, len(ids), id, uploadErr))
 		} else {
 			if cleanupErr := downloaded.Cleanup(); cleanupErr != nil { b.log.Warn("temporary file cleanup failed", "path", downloaded.Path, "error", cleanupErr) }
@@ -573,8 +575,8 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 	}
 	if len(retryTasks) > 0 {
 		if ctx.Err() == nil {
-			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("First pass complete. Retrying %d failed upload group(s) once at the end; no new Telegram downloads are needed.", len(retryTasks)))
-			retried, retryRefs := b.retryFailedUploads(ctx, destinationPeer, d, label, destinationTopicID, retryTasks, progress, chatID, done, failed, skipped)
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("First pass complete. Retrying %d failed upload group(s) once at the end; only failed source items will be downloaded again.", len(retryTasks)))
+			retried, retryRefs := b.retryFailedUploads(ctx, api, destinationPeer, d, label, destinationTopicID, retryTasks, progress, chatID, done, failed, skipped)
 			done += retried
 			failed -= retried
 			resultRefs = append(resultRefs, retryRefs...)
