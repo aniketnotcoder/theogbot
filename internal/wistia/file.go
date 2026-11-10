@@ -95,9 +95,10 @@ func (c *Client) UploadTelegramMessageFromFile(
 	}
 	tempPath = f.Name()
 	keepFile := false
+	fileClosed := false
 	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = closeErr
+		if !fileClosed {
+			if closeErr := f.Close(); err == nil && closeErr != nil { err = closeErr }
 		}
 		if !keepFile {
 			if removeErr := os.Remove(tempPath); err == nil && removeErr != nil && !os.IsNotExist(removeErr) {
@@ -119,6 +120,7 @@ func (c *Client) UploadTelegramMessageFromFile(
 	if err = f.Close(); err != nil {
 		return UploadResult{}, "", fmt.Errorf("close Wistia temporary video: %w", err)
 	}
+	fileClosed = true
 	info, err := os.Stat(tempPath)
 	if err != nil {
 		return UploadResult{}, "", fmt.Errorf("stat Wistia temporary video: %w", err)
@@ -130,7 +132,7 @@ func (c *Client) UploadTelegramMessageFromFile(
 	if progress != nil {
 		uploadProgress = func(current, total int64) { progress("Uploading", current, total) }
 	}
-	result, err = c.uploadPathAs(ctx, tempPath, filename, displayName, uploadProgress)
+	result, err = c.UploadFile(ctx, tempPath, filename, displayName, uploadProgress)
 	if err != nil {
 		keepFile = true
 		return UploadResult{}, tempPath, err
