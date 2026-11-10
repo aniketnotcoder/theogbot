@@ -356,7 +356,7 @@ func (b *Bot) handleMessage(ctx context.Context,msg *incomingMessage) {
 }
 
 func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []string) {
-	ctx,cancel:=context.WithTimeout(parent,30*time.Minute);defer cancel()
+	ctx:=parent
 	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your account first using the menu.");return}
 	var source tg.InputPeerClass;ids:=make([]int,0,len(rawLinks))
 	for _,raw:=range rawLinks{
@@ -371,7 +371,7 @@ func (b *Bot) runBatch(parent context.Context,userID,chatID int64,rawLinks []str
 }
 
 func (b *Bot) runCopy(parent context.Context,userID,chatID int64,raw string,limit int) {
-	ctx,cancel:=context.WithTimeout(parent,30*time.Minute);defer cancel()
+	ctx:=parent
 	api,ok:=b.accounts.API(userID);if !ok{_=b.sendMessage(ctx,chatID,"Connect your account first using the menu.");return}
 	username,channelID,err:=parseChatLink(raw);if err!=nil{_=b.sendMessage(ctx,chatID,err.Error());return}
 	var source tg.InputPeerClass
@@ -407,6 +407,9 @@ func (b *Bot) executeTransfer(ctx context.Context, userID int64, api *tg.Client,
 	if progress != nil { progress.update(ctx,"Ready",1,done,failed,skipped,true) }
 	for i := 0; i < len(ids); {
 		if err := ctx.Err(); err != nil {
+			cause := context.Cause(ctx)
+			if cause == nil { cause = err }
+			b.log.Warn("transfer stopped because its context ended", "user_id", userID, "type", label, "completed", done, "failed", failed, "skipped", skipped, "requested", len(ids), "cause", cause)
 			if progress != nil { progress.update(context.Background(),"Cancelled",i+1,done,failed,skipped,true) }
 			_ = b.sendMessage(context.Background(), chatID, fmt.Sprintf("%s cancelled after %d/%d (failed %d, skipped %d).", label, done, len(ids), failed, skipped))
 			b.sendTransferResults(context.Background(),chatID,d,label,done,resultRefs)
