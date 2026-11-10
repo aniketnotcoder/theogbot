@@ -40,3 +40,21 @@ func TestParseRejectsNonMessageLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestParseForumMessagePermalinks(t *testing.T) {
+	tests := []struct {
+		name string
+		input string
+		want MessageLink
+	}{
+		{"public forum message", "https://t.me/example_channel/55/138", MessageLink{Username: "example_channel", MessageID: 138}},
+		{"private forum message", "https://t.me/c/123456789/55/138", MessageLink{ChannelID: 123456789, MessageID: 138}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Parse(tt.input)
+			if err != nil { t.Fatalf("Parse() error = %v", err) }
+			if got != tt.want { t.Fatalf("Parse() = %#v, want %#v", got, tt.want) }
+		})
+	}
+}
