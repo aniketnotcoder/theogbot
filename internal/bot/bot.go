@@ -578,9 +578,15 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 		} else {
 		}
 	}
-	if progress != nil { progress.update(ctx,"Finished",len(ids),done,failed,skipped,true) }
-	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s finished. Uploaded: %d, failed: %d, skipped: %d, requested: %d.", label, done, failed, skipped, len(ids)))
-	b.sendTransferResults(ctx,chatID,d,label,done,resultRefs)
+	finishCtx := ctx
+	if ctx.Err() != nil {
+		var finishCancel context.CancelFunc
+		finishCtx, finishCancel = context.WithTimeout(context.Background(), 15*time.Second)
+		defer finishCancel()
+	}
+	if progress != nil { progress.update(finishCtx,"Finished",len(ids),done,failed,skipped,true) }
+	_ = b.sendMessage(finishCtx, chatID, fmt.Sprintf("%s finished. Uploaded: %d, failed: %d, skipped: %d, requested: %d.", label, done, failed, skipped, len(ids)))
+	b.sendTransferResults(finishCtx,chatID,d,label,done,resultRefs)
 }
 
 func (b *Bot) sendTransferResults(ctx context.Context, chatID int64, dest destination, label string, done int, refs []string) {
