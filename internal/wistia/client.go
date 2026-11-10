@@ -20,6 +20,7 @@ type Client struct {
 	apiVersion  string
 	http        *http.Client
 	pollEvery   time.Duration
+	downloadThreads int
 }
 
 func NewClient(cfg Config) (*Client, error) {
@@ -51,6 +52,9 @@ func NewClient(cfg Config) (*Client, error) {
 			},
 		}
 	}
+	if cfg.DownloadThreads < 1 || cfg.DownloadThreads > 32 {
+		cfg.DownloadThreads = 8
+	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 20 * time.Second
 	}
@@ -63,6 +67,7 @@ func NewClient(cfg Config) (*Client, error) {
 		apiVersion: strings.TrimSpace(cfg.APIVersion),
 		http: cfg.HTTPClient,
 		pollEvery: cfg.PollInterval,
+		downloadThreads: cfg.DownloadThreads,
 	}, nil
 }
 
