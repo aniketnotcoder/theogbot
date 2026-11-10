@@ -132,7 +132,7 @@ func (c *Client) GetMedia(ctx context.Context, hashedID string) (MediaInfo, erro
 	}
 	if assetURL, assetType := findMP4AssetURL(raw); assetURL != "" {
 		info.DeliveryURL = normalizeDeliveryURL(assetURL)
-		info.MP4URL = mp4AssetURL(assetURL, info.Name)
+		info.MP4URL = mp4AssetURL(info.DeliveryURL, info.Name)
 		info.AssetType = assetType
 	}
 	if info.Status == "" {
