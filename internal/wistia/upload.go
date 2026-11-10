@@ -22,10 +22,10 @@ type countWriter struct{ n int64 }
 func (w *countWriter) Write(p []byte) (int, error) { w.n += int64(len(p)); return len(p), nil }
 
 func (c *Client) UploadPath(ctx context.Context, filePath, displayName string, progress ProgressFunc) (UploadResult, error) {
-	return c.uploadPathAs(ctx, filePath, filepath.Base(filePath), displayName, progress)
+	return c.UploadFile(ctx, filePath, filepath.Base(filePath), displayName, progress)
 }
 
-func (c *Client) uploadPathAs(ctx context.Context, filePath, filename, displayName string, progress ProgressFunc) (UploadResult, error) {
+func (c *Client) UploadFile(ctx context.Context, filePath, filename, displayName string, progress ProgressFunc) (UploadResult, error) {
 	f, err := os.Open(filePath)
 	if err != nil { return UploadResult{}, fmt.Errorf("open upload file: %w", err) }
 	defer f.Close()
