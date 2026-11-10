@@ -49,6 +49,19 @@ func (c *Client) UploadTelegramMessageFromFile(
 	elem messages.Elem,
 	tempDir string,
 	progress StageProgressFunc,
+) (UploadResult, string, error) {
+	return c.UploadTelegramMessageFromFileNamed(ctx, api, elem, tempDir, "", progress)
+}
+
+// UploadTelegramMessageFromFileNamed is the parallel disk-backed uploader with
+// an optional display name override (used to retain Telegram forum-topic context).
+func (c *Client) UploadTelegramMessageFromFileNamed(
+	ctx context.Context,
+	api *tg.Client,
+	elem messages.Elem,
+	tempDir string,
+	displayName string,
+	progress StageProgressFunc,
 ) (result UploadResult, tempPath string, err error) {
 	if c == nil {
 		return UploadResult{}, "", fmt.Errorf("Wistia client is nil")
@@ -85,7 +98,9 @@ func (c *Client) UploadTelegramMessageFromFile(
 		return UploadResult{}, "", fmt.Errorf("Telegram document has an invalid size: %d", doc.Size)
 	}
 	filename := safeFilename(file.Name)
-	displayName := strings.TrimSpace(msg.Message)
+	if strings.TrimSpace(displayName) == "" {
+		displayName = strings.TrimSpace(msg.Message)
+	}
 	if displayName == "" {
 		displayName = filename
 	}
