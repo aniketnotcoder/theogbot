@@ -12,7 +12,10 @@ type UploadResult struct {
 }
 
 type MediaInfo struct {
-	HashedID string
-	Name     string
-	Status   string
+	HashedID    string
+	Name        string
+	Status      string
+	DeliveryURL string
+	MP4URL      string
+	AssetType   string
 }
