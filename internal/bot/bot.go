@@ -484,6 +484,11 @@ func (b *Bot) executeTransferWithTopic(ctx context.Context, userID int64, api *t
 			if cause == nil { cause = err }
 			b.log.Warn("transfer stopped because its context ended", "user_id", userID, "type", label, "completed", done, "failed", failed, "skipped", skipped, "requested", len(ids), "cause", cause)
 			if progress != nil { progress.update(context.Background(),"Cancelled",i+1,done,failed,skipped,true) }
+			for _, task := range retryTasks {
+				for _, item := range task.items {
+					if cleanupErr := item.Cleanup(); cleanupErr != nil { b.log.Warn("retry temp cleanup after cancellation failed", "path", item.Path, "error", cleanupErr) }
+				}
+			}
 			_ = b.sendMessage(context.Background(), chatID, fmt.Sprintf("%s cancelled after %d/%d (failed %d, skipped %d).", label, done, len(ids), failed, skipped))
 			b.sendTransferResults(context.Background(),chatID,d,label,done,resultRefs)
 			return
