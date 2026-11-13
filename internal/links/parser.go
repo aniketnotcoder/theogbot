@@ -14,6 +14,7 @@ type MessageLink struct {
 	Username  string
 	ChannelID int64
 	MessageID int
+	TopicID int
 }
 
 // Parse accepts message permalinks in t.me, telegram.me and tg://privatepost
@@ -63,7 +64,7 @@ func Parse(raw string) (MessageLink, error) {
 		id, err := strconv.Atoi(parts[2])
 		topicID, topicErr := strconv.Atoi(parts[1])
 		if err == nil && topicErr == nil && id > 0 && topicID > 0 && validUsername(parts[0]) {
-			return MessageLink{Username: parts[0], MessageID: id}, nil
+			return MessageLink{Username: parts[0], MessageID: id, TopicID: topicID}, nil
 		}
 	}
 	if len(parts) == 4 && parts[0] == "c" {
@@ -71,7 +72,7 @@ func Parse(raw string) (MessageLink, error) {
 		topicID, topicErr := strconv.Atoi(parts[2])
 		id, idErr := strconv.Atoi(parts[3])
 		if channelErr == nil && topicErr == nil && idErr == nil && channel > 0 && topicID > 0 && id > 0 {
-			return MessageLink{ChannelID: channel, MessageID: id}, nil
+			return MessageLink{ChannelID: channel, MessageID: id, TopicID: topicID}, nil
 		}
 	}
 	// Private channel post links: https://t.me/c/<internal_channel_id>/<message_id>.

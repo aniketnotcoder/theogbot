@@ -47,8 +47,8 @@ func TestParseForumMessagePermalinks(t *testing.T) {
 		input string
 		want MessageLink
 	}{
-		{"public forum message", "https://t.me/example_channel/55/138", MessageLink{Username: "example_channel", MessageID: 138}},
-		{"private forum message", "https://t.me/c/123456789/55/138", MessageLink{ChannelID: 123456789, MessageID: 138}},
+		{"public forum message", "https://t.me/example_channel/55/138", MessageLink{Username: "example_channel", MessageID: 138, TopicID: 55}},
+		{"private forum message", "https://t.me/c/123456789/55/138", MessageLink{ChannelID: 123456789, MessageID: 138, TopicID: 55}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
