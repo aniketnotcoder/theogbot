@@ -49,3 +49,23 @@ func filterWistiaForumRange(topics []forward.ForumTopic, start, end int) []forwa
 	}
 	return filtered
 }
+
+
+// filterWistiaForumTopicRange selects only the linked forum topic, then applies
+// the inclusive Telegram message-ID range. Other topics are never returned.
+func filterWistiaForumTopicRange(topics []forward.ForumTopic, topicID, start, end int) (forward.ForumTopic, bool) {
+	for _, topic := range topics {
+		if topic.ID != topicID {
+			continue
+		}
+		ids := make([]int, 0, len(topic.IDs))
+		for _, id := range topic.IDs {
+			if id >= start && id <= end {
+				ids = append(ids, id)
+			}
+		}
+		topic.IDs = ids
+		return topic, true
+	}
+	return forward.ForumTopic{}, false
+}
