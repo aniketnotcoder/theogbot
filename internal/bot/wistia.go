@@ -157,7 +157,7 @@ func (b *Bot) runWistiaCopy(parent context.Context, userID, chatID int64, rawCha
 			if ctx.Err() != nil { break }
 			title := strings.TrimSpace(topic.Title)
 			if title == "" { title = fmt.Sprintf("Topic %d", topic.ID) }
-			if len(topic.IDs) > 0 { b.uploadWistiaIDs(ctx, userID, api, source, chatID, topic.IDs, "Wistia · "+title, title) }
+			if len(topic.IDs) > 0 && b.uploadWistiaIDs(ctx, userID, api, source, chatID, topic.IDs, "Wistia · "+title, title) { return }
 		}
 		_ = b.sendMessage(ctx, chatID, "Wistia forum copy finished. Topic labels were retained in media names.")
 		return
@@ -172,39 +172,41 @@ func (b *Bot) runWistiaCopy(parent context.Context, userID, chatID int64, rawCha
 	b.uploadWistiaIDs(ctx, userID, api, source, chatID, ids, "Wistia copy", "")
 }
 
-// runWistiaResume continues a partially completed Wistia migration from an
-// inclusive Telegram message-ID range. For forums, it resolves every message
-// back to its topic and keeps topic labels in Wistia media names.
+// runWistiaResume continues a migration inside the exact forum topic encoded
+// in the supplied Telegram permalink. A forum resume never fans out to sibling topics.
 func (b *Bot) runWistiaResume(parent context.Context, userID, chatID int64, rawLink string, start, end int) {
 	ctx := parent
 	if !b.requireWistia(ctx, chatID) { return }
 	api, ok := b.accounts.API(userID)
 	if !ok { _ = b.sendMessage(ctx, chatID, "Connect your Telegram account first using /login."); return }
+	parsedLink, parseErr := links.Parse(rawLink)
+	if parseErr != nil { _ = b.sendMessage(ctx, chatID, "Invalid Telegram post link: "+parseErr.Error()); return }
 	source, linkedID, err := b.resolveWistiaSource(ctx, api, rawLink)
 	if err != nil { _ = b.sendMessage(ctx, chatID, err.Error()); return }
 	if linkedID != start || start <= 0 || end < start {
 		_ = b.sendMessage(ctx, chatID, "Resume range does not match the linked Telegram post.")
 		return
 	}
-	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Resuming Wistia migration from Telegram message %d through %d. Previously completed messages before %d will not be uploaded again.", start, end, start))
+	_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Checking only the linked forum topic. Telegram message range: %d-%d.", start, end))
 
-	topics, forumErr := forward.FetchForumTopics(ctx, api, source, 50000)
+	topic, forumErr := forward.FetchForumTopic(ctx, api, source, parsedLink.TopicID, 50000)
 	if forumErr == nil {
-		selected := filterWistiaForumRange(topics, start, end)
-		if len(selected) == 0 {
-			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("No accessible forum messages found in range %d-%d.", start, end))
+		selected, ok := filterWistiaForumTopicRange([]forward.ForumTopic{topic}, parsedLink.TopicID, start, end)
+		if !ok || len(selected.IDs) == 0 {
+			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("No accessible messages found in forum topic %q within Telegram message IDs %d-%d.", topic.Title, start, end))
 			return
 		}
-		total := 0
-		for _, topic := range selected { total += len(topic.IDs) }
-		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Forum resume: %d topics and %d source messages in range. Topic labels will be retained.", len(selected), total))
-		for _, topic := range selected {
-			if ctx.Err() != nil { break }
-			title := strings.TrimSpace(topic.Title)
-			if title == "" { title = fmt.Sprintf("Topic %d", topic.ID) }
-			b.uploadWistiaIDs(ctx, userID, api, source, chatID, topic.IDs, "Wistia resume · "+title, title)
+		title := strings.TrimSpace(selected.Title)
+		if title == "" { title = fmt.Sprintf("Topic %d", selected.ID) }
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Topic locked: %s (topic ID %d). Found %d source messages in the requested range. No other forum topic will be touched.", title, selected.ID, len(selected.IDs)))
+		if b.uploadWistiaIDs(ctx, userID, api, source, chatID, selected.IDs, "Wistia resume · "+title, title) {
+			return
 		}
-		if ctx.Err() == nil { _ = b.sendMessage(ctx, chatID, "Wistia forum resume finished. Topic labels were retained in media names.") }
+		if ctx.Err() == nil { _ = b.sendMessage(ctx, chatID, "Wistia topic resume finished.") }
+		return
+	}
+	if errors.Is(forumErr, forward.ErrForumTopicRequired) {
+		_ = b.sendMessage(ctx, chatID, "This source is a forum. Use a topic-specific post link such as https://t.me/c/<channel>/<topic-id>/<message-id>; resume will stay inside that topic.")
 		return
 	}
 	if !errors.Is(forumErr, forward.ErrNotForum) {
@@ -223,6 +225,15 @@ func (b *Bot) runWistiaResume(parent context.Context, userID, chatID int64, rawL
 	b.uploadWistiaIDs(ctx, userID, api, source, chatID, selected, "Wistia resume", "")
 }
 
+
+func isWistiaStorageLimitError(err error) bool {
+	if err == nil { return false }
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "exceeded its storage limit") ||
+		strings.Contains(message, "account has exceeded its storage") ||
+		strings.Contains(message, "storage limit has been reached")
+}
+
 func isWistiaVideo(elem messages.Elem) bool {
 	if _, ok := elem.Msg.(*tg.Message); !ok { return false }
 	doc, ok := elem.Document()
@@ -232,13 +243,14 @@ func isWistiaVideo(elem messages.Elem) bool {
 	return false
 }
 
-func (b *Bot) uploadWistiaIDs(ctx context.Context, userID int64, api *tg.Client, source tg.InputPeerClass, chatID int64, ids []int, label, topicTitle string) {
-	if len(ids) == 0 { _ = b.sendMessage(ctx, chatID, label+": no source messages to process."); return }
+func (b *Bot) uploadWistiaIDs(ctx context.Context, userID int64, api *tg.Client, source tg.InputPeerClass, chatID int64, ids []int, label, topicTitle string) bool {
+	if len(ids) == 0 { _ = b.sendMessage(ctx, chatID, label+": no source messages to process."); return false }
 	elements, err := forward.FetchMessagesByID(ctx, api, source, ids)
-	if err != nil { _ = b.sendMessage(ctx, chatID, label+" could not retrieve the requested source messages: "+err.Error()); return }
+	if err != nil { _ = b.sendMessage(ctx, chatID, label+" could not retrieve the requested source messages: "+err.Error()); return false }
 	progress, progressErr := b.newProgress(ctx, chatID, label, len(elements))
 	if progressErr != nil { b.log.Warn("Wistia batch progress unavailable", "user_id", userID, "error", progressErr) }
 	done, failed, skipped := 0, 0, 0
+	quotaExceeded := false
 	results := make([]wistiaBatchResult, 0)
 	for i, elem := range elements {
 		if err := ctx.Err(); err != nil { break }
@@ -262,6 +274,11 @@ func (b *Bot) uploadWistiaIDs(ctx context.Context, userID int64, api *tg.Client,
 			failed++
 			if tempPath != "" { b.log.Error("Wistia batch failed; retained temporary source for reconciliation", "user_id", userID, "message_id", msg.ID, "path", tempPath, "error", uploadErr) }
 			_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s [%d/%d] failed for Telegram message %d: %v", label, i+1, len(elements), msg.ID, uploadErr))
+			if isWistiaStorageLimitError(uploadErr) {
+				quotaExceeded = true
+				_ = b.sendMessage(ctx, chatID, fmt.Sprintf("Wistia storage limit reached at Telegram message %d. This upload pass has been stopped; later messages were not attempted. Switch to a Wistia account with available storage, then resume from this failed post.", msg.ID))
+				break
+			}
 			continue
 		}
 		done++
@@ -271,6 +288,8 @@ func (b *Bot) uploadWistiaIDs(ctx context.Context, userID int64, api *tg.Client,
 	if ctx.Err() != nil {
 		if progress != nil { progress.update(context.Background(), "Cancelled", len(elements), done, failed, skipped, true) }
 		_ = b.sendMessage(context.Background(), chatID, fmt.Sprintf("%s cancelled. Uploaded: %d, failed: %d, skipped: %d, requested: %d.", label, done, failed, skipped, len(elements)))
+	} else if quotaExceeded {
+		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s stopped at the Wistia storage limit. Uploaded before the limit: %d, failed: %d, skipped: %d, requested: %d. Waiting for already-uploaded assets…", label, done, failed, skipped, len(elements)))
 	} else {
 		_ = b.sendMessage(ctx, chatID, fmt.Sprintf("%s upload pass complete. Uploaded: %d, failed: %d, skipped: %d, requested: %d. Waiting for Wistia assets…", label, done, failed, skipped, len(elements)))
 	}
@@ -306,6 +325,7 @@ func (b *Bot) uploadWistiaIDs(ctx context.Context, userID int64, api *tg.Client,
 	if progress != nil { progress.update(finishCtx, "Finished", len(elements), done, failed, skipped, true) }
 	_ = b.sendMessage(finishCtx, chatID, fmt.Sprintf("%s finished. Uploaded: %d, assets ready: %d, failed: %d, skipped: %d, requested: %d.", label, done, ready, failed, skipped, len(elements)))
 	sendWistiaBatchResults(finishCtx, b, chatID, label, results)
+	return quotaExceeded
 }
 
 func sendWistiaBatchResults(ctx context.Context, b *Bot, chatID int64, label string, results []wistiaBatchResult) {
