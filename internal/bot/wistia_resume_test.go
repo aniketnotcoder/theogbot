@@ -2,6 +2,7 @@ package bot
 
 import (
 	"reflect"
+	"fmt"
 	"testing"
 
 	"github.com/aniketnotcoder/theogbot/internal/forward"
@@ -51,5 +52,32 @@ func TestFilterWistiaForumRangePreservesTopicTitlesAndOrder(t *testing.T) {
 		if !reflect.DeepEqual(got[i].IDs, want[i]) {
 			t.Errorf("topic %q IDs = %v, want %v", got[i].Title, got[i].IDs, want[i])
 		}
+	}
+}
+
+
+func TestFilterWistiaForumTopicRangeLocksToLinkedTopic(t *testing.T) {
+	topics := []forward.ForumTopic{
+		{ID: 4, Title: "03. Frontend", IDs: []int{70, 82, 90, 120, 157, 160}},
+		{ID: 7, Title: "05. Backend", IDs: []int{83, 100, 130, 157}},
+	}
+	got, ok := filterWistiaForumTopicRange(topics, 4, 90, 157)
+	if !ok {
+		t.Fatal("expected linked Frontend topic")
+	}
+	if got.ID != 4 || got.Title != "03. Frontend" || !reflect.DeepEqual(got.IDs, []int{90, 120, 157}) {
+		t.Fatalf("topic-locked range = %+v", got)
+	}
+	if _, ok := filterWistiaForumTopicRange(topics, 99, 90, 157); ok {
+		t.Fatal("unknown topic should not match")
+	}
+}
+
+func TestIsWistiaStorageLimitError(t *testing.T) {
+	if !isWistiaStorageLimitError(fmt.Errorf("Wistia rejected upload: account has exceeded its storage limit")) {
+		t.Fatal("expected storage quota error to be detected")
+	}
+	if isWistiaStorageLimitError(fmt.Errorf("invalid API token: forbidden")) {
+		t.Fatal("ordinary authorization errors must not be treated as quota errors")
 	}
 }
