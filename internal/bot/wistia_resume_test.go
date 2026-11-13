@@ -1,8 +1,8 @@
 package bot
 
 import (
-	"reflect"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/aniketnotcoder/theogbot/internal/forward"
@@ -10,13 +10,13 @@ import (
 
 func TestParseWistiaResumeCommandUsesFailedPostIDAsStart(t *testing.T) {
 	link, start, end, err := parseWistiaResumeCommand([]string{
-		"/wistia", "resume", "https://t.me/c/4451402994/138", "to", "309",
+		"/wistia", "resume", "https://t.me/c/4451402994/4/82", "to", "157",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if link != "https://t.me/c/4451402994/138" || start != 138 || end != 309 {
-		t.Fatalf("got (%q, %d, %d), want failed post 138 through 309", link, start, end)
+	if link != "https://t.me/c/4451402994/4/82" || start != 82 || end != 157 {
+		t.Fatalf("got (%q, %d, %d), want topic 4 post 82 through 157", link, start, end)
 	}
 }
 
