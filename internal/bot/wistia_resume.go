@@ -11,7 +11,7 @@ import (
 
 // parseWistiaResumeCommand accepts a permalink to the first message to retry,
 // followed by an inclusive end message ID:
-// /wistia resume https://t.me/c/<channel>/<start> to <end>.
+// /wistia resume https://t.me/c/<channel>/<topic>/<start> to <end> (forums).
 func parseWistiaResumeCommand(fields []string) (string, int, int, error) {
 	if len(fields) != 5 || !strings.EqualFold(fields[3], "to") {
 		return "", 0, 0, fmt.Errorf("Usage: /wistia resume <failed-post-link> to <end-message-id>")
