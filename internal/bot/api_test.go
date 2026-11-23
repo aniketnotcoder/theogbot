@@ -57,7 +57,8 @@ func TestTelegramAPIErrorIncludesRetryDelay(t *testing.T) {
 		Method: "sendPhoto", Description: "Too Many Requests",
 		HTTPStatus: 429, Code: 429, RetryAfter: 5,
 	}).Error()
-	if err == "" || err == "telegram API sendPhoto: Too Many Requests (HTTP 429, error 429)" {
-		t.Fatalf("error should include the retry delay, got %q", err)
+	want := "telegram API sendPhoto: Too Many Requests (HTTP 429, error 429); retry after 5s"
+	if err != want {
+		t.Fatalf("error = %q, want %q", err, want)
 	}
 }
