@@ -1394,9 +1394,7 @@ func (b *Bot) call(ctx context.Context, method string, values url.Values, out an
 			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
-				if !timer.Stop() {
-					<-timer.C
-				}
+				timer.Stop()
 				return ctx.Err()
 			case <-timer.C:
 				continue
