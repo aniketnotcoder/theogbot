@@ -1374,10 +1374,10 @@ func (b *Bot) call(ctx context.Context, method string, values url.Values, out an
 			return nil
 		}
 
-		code := result.ErrorCode
-		if code == 0 && statusCode == http.StatusTooManyRequests {
-			code = http.StatusTooManyRequests
+		if result.ErrorCode == 0 && statusCode == http.StatusTooManyRequests {
+			result.ErrorCode = http.StatusTooManyRequests
 		}
+		code := result.ErrorCode
 		retryAfter := 0
 		if result.Parameters != nil {
 			retryAfter = result.Parameters.RetryAfter
