@@ -224,9 +224,38 @@ func (p *progressReporter) update(ctx context.Context, stage string, current, do
 	if err:=p.bot.call(ctx,method,values,nil);err!=nil{p.bot.log.Warn("progress message update failed","chat_id",p.chatID,"error",err)}
 }
 type apiResponse[T any] struct {
-	OK bool `json:"ok"`
-	Description string `json:"description"`
-	Result T `json:"result"`
+	OK          bool            `json:"ok"`
+	ErrorCode   int             `json:"error_code"`
+	Description string          `json:"description"`
+	Parameters  *apiParameters  `json:"parameters"`
+	Result      T               `json:"result"`
+}
+
+type apiParameters struct {
+	RetryAfter int `json:"retry_after"`
+}
+
+type telegramAPIError struct {
+	Method      string
+	Description string
+	HTTPStatus  int
+	Code        int
+	RetryAfter  int
+}
+
+func (e *telegramAPIError) Error() string {
+	message := fmt.Sprintf("telegram API %s: %s (HTTP %d, error %d)", e.Method, e.Description, e.HTTPStatus, e.Code)
+	if e.RetryAfter > 0 {
+		message += fmt.Sprintf("; retry after %ds", e.RetryAfter)
+	}
+	return message
+}
+
+func (r apiResponse[T]) floodWait() time.Duration {
+	if r.OK || r.ErrorCode != 429 || r.Parameters == nil || r.Parameters.RetryAfter <= 0 {
+		return 0
+	}
+	return time.Duration(r.Parameters.RetryAfter) * time.Second
 }
 
 func New(token string, logger *slog.Logger, accounts *account.Manager) *Bot {
@@ -875,7 +904,15 @@ func (b *Bot) sendPhotoMarkup(ctx context.Context, chatID int64, caption string,
 			"caption": {caption},
 		}
 		if markup != nil { values.Set("reply_markup", mustJSON(markup)) }
-		if err := b.call(ctx, "sendPhoto", values, out); err == nil { return nil } else {
+		if err := b.call(ctx, "sendPhoto", values, out); err == nil {
+			return nil
+		} else {
+			var apiErr *telegramAPIError
+			// A flood-control rejection applies to the bot's send path; immediately
+			// trying sendMessage would only create another rejected request.
+			if errors.As(err, &apiErr) && apiErr.Code == http.StatusTooManyRequests {
+				return err
+			}
 			b.log.Warn("waifu image message failed; using text fallback", "chat_id", chatID, "error", err)
 		}
 	}
@@ -1253,7 +1290,7 @@ func (b *Bot) handleCallback(ctx context.Context,q *callbackQuery){
 	}
 }
 func (b *Bot) onAccountEvent(userID int64,state string,err error){
-	ctx,cancel:=context.WithTimeout(context.Background(),12*time.Second);defer cancel()
+	ctx,cancel:=context.WithTimeout(context.Background(),2*time.Minute);defer cancel()
 	switch state {
 	case "awaiting_code":
 		b.sendOTPKeypad(ctx,userID,userID)
@@ -1301,15 +1338,72 @@ func (b *Bot) sendDocument(ctx context.Context, chatID int64, path string) error
 	return nil
 }
 
-func (b *Bot) call(ctx context.Context,method string,values url.Values,out any)error{
-	if values==nil{values=url.Values{}}
-	req,err:=http.NewRequestWithContext(ctx,http.MethodPost,telegramAPI+"/bot"+b.token+"/"+method,strings.NewReader(values.Encode()));if err!=nil{return err}
-	req.Header.Set("Content-Type","application/x-www-form-urlencoded")
-	resp,err:=b.client.Do(req);if err!=nil{return err};defer resp.Body.Close()
-	var result apiResponse[json.RawMessage];if err:=json.NewDecoder(resp.Body).Decode(&result);err!=nil{return err}
-	if resp.StatusCode<200||resp.StatusCode>=300||!result.OK{return fmt.Errorf("telegram API %s: %s (HTTP %d)",method,result.Description,resp.StatusCode)}
-	if out!=nil&&len(result.Result)>0{return json.Unmarshal(result.Result,out)}
-	return nil
+func (b *Bot) call(ctx context.Context, method string, values url.Values, out any) error {
+	if values == nil {
+		values = url.Values{}
+	}
+
+	// Telegram Bot API flood-control responses include parameters.retry_after.
+	// A 429 means the request was rejected, so replaying it after that exact
+	// delay is safe. Never retry ambiguous network failures or other API errors.
+	const maxFloodRetries = 3
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			telegramAPI+"/bot"+b.token+"/"+method, strings.NewReader(values.Encode()))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := b.client.Do(req)
+		if err != nil {
+			return err
+		}
+		var result apiResponse[json.RawMessage]
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		statusCode := resp.StatusCode
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			return fmt.Errorf("decode Telegram API %s response: %w", method, decodeErr)
+		}
+
+		if statusCode >= 200 && statusCode < 300 && result.OK {
+			if out != nil && len(result.Result) > 0 {
+				return json.Unmarshal(result.Result, out)
+			}
+			return nil
+		}
+
+		code := result.ErrorCode
+		if code == 0 && statusCode == http.StatusTooManyRequests {
+			code = http.StatusTooManyRequests
+		}
+		retryAfter := 0
+		if result.Parameters != nil {
+			retryAfter = result.Parameters.RetryAfter
+		}
+		apiErr := &telegramAPIError{
+			Method: method, Description: result.Description,
+			HTTPStatus: statusCode, Code: code, RetryAfter: retryAfter,
+		}
+		wait := result.floodWait()
+		if statusCode == http.StatusTooManyRequests && code == http.StatusTooManyRequests &&
+			wait > 0 && attempt < maxFloodRetries {
+			b.log.Warn("Telegram Bot API flood control; waiting before retry",
+				"method", method, "retry_after_seconds", retryAfter, "attempt", attempt+1)
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return ctx.Err()
+			case <-timer.C:
+				continue
+			}
+		}
+		return apiErr
+	}
 }
 
 func (b *Bot) startJob(userID int64, parent context.Context) (context.Context, bool) {
